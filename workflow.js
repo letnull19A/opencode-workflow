@@ -1,23 +1,44 @@
-import { createOpencode, createOpencodeClient } from "@opencode-ai/sdk";
+import {
+  createOpencodeClient,
+  createOpencodeServer,
+} from "@opencode-ai/sdk";
 
 // Хардкод демо-workflow: текст промпта зафиксирован
 export const WORKFLOW_PROMPT = "Test";
 export const WORKFLOW_TITLE = "Test workflow";
 
+// HTTP Basic Auth для защищённого сервера.
+// Сервер включает auth при заданном OPENCODE_SERVER_PASSWORD
+// (юзер по умолчанию "opencode", переопределяется OPENCODE_SERVER_USERNAME).
+function serverAuthHeaders() {
+  const password = process.env.OPENCODE_SERVER_PASSWORD;
+  if (!password) return undefined;
+  const username = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
+  const token = Buffer.from(`${username}:${password}`).toString("base64");
+  return { Authorization: `Basic ${token}` };
+}
+
 export async function createWorkflowRuntime() {
   const serverUrl = process.env.OPENCODE_SERVER_URL;
   const directory = process.env.OPENCODE_DIRECTORY;
+  const headers = serverAuthHeaders();
+  const clientOpts = {
+    ...(headers ? { headers } : {}),
+    ...(directory ? { directory } : {}),
+  };
   let client = null;
   let server = null;
 
   // Attach к запущенному серверу, если задан OPENCODE_SERVER_URL
   if (serverUrl) {
-    const attached = createOpencodeClient({
-      baseUrl: serverUrl,
-      ...(directory ? { directory } : {}),
-    });
+    const attached = createOpencodeClient({ baseUrl: serverUrl, ...clientOpts });
     try {
-      await attached.app.agents(); // дешёвая проверка доступности
+      // дешёвая проверка доступности; важно: SDK в режиме "fields"
+      // не бросает исключение на 401, ошибку смотрим в res.error
+      const probe = await attached.app.agents();
+      if (probe.error) {
+        throw new Error(`server check failed, HTTP ${probe.response?.status}`);
+      }
       console.log(`attached to running opencode server at ${serverUrl}`);
       client = attached;
     } catch (err) {
@@ -27,9 +48,12 @@ export async function createWorkflowRuntime() {
     }
   }
 
-  // Своего сервера нет и attach не удался — запускаем собственный
+  // Своего сервера нет и attach не удался — запускаем собственный.
+  // Сервер наследует process.env, поэтому при заданном
+  // OPENCODE_SERVER_PASSWORD он тоже будет защищён — тот же заголовок
+  // подключаем и к своему клиенту.
   if (!client) {
-    const opencode = await createOpencode({
+    server = await createOpencodeServer({
       port: 0,
       config: {
         permission: {
@@ -50,8 +74,7 @@ export async function createWorkflowRuntime() {
         },
       },
     });
-    client = opencode.client;
-    server = opencode.server;
+    client = createOpencodeClient({ baseUrl: server.url, ...clientOpts });
   }
 
   // Авто-подтверждение permission-запросов, иначе prompt висит в фоне

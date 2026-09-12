@@ -33,6 +33,8 @@ PORT=9000 bun webhook.js
 |---|---|
 | `OPENCODE_SERVER_URL` | attach to a running server (e.g. `http://127.0.0.1:4096`); if empty or unreachable, a new server is started |
 | `OPENCODE_DIRECTORY` | project for attach mode (optional) |
+| `OPENCODE_SERVER_PASSWORD` | password for a protected server (HTTP Basic Auth) |
+| `OPENCODE_SERVER_USERNAME` | auth username (default `opencode`) |
 | `PORT` | webhook port (default `8787`) |
 
 In attach mode the running server's config and model are used, not the local ones (`permission: allow` and `reasoningEffort: minimal` apply only to a self-started server).
