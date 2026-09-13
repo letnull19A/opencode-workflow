@@ -1,0 +1,465 @@
+openapi: 3.0.3
+info:
+  title: opencode-workflow HTTP API
+  description: |
+    Webhook API of the module-development orchestrator. Drives opencode
+    sessions (one-off runs, module pipeline by name) and ingests tasks.
+    All responses are JSON.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8787
+    description: local webhook (PORT env)
+tags:
+  - name: System
+  - name: Run
+  - name: Tasks
+  - name: Modules
+  - name: Stream
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness probe
+      operationId: health
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                    example: true
+
+  /agents:
+    get:
+      tags: [System]
+      summary: List agents known to the opencode server
+      operationId: listAgents
+      responses:
+        "200":
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, agents]
+                properties:
+                  ok:
+                    type: boolean
+                  agents:
+                    type: array
+                    items:
+                      type: string
+                    example: ["build", "unit-test", "refactor"]
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /run:
+    get:
+      tags: [Run]
+      summary: One-off agent run (workflow prompt), agent via query
+      operationId: runGet
+      parameters:
+        - name: agent
+          in: query
+          required: false
+          schema:
+            type: string
+            example: refactor
+      responses:
+        "200":
+          description: Completed agent session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "400":
+          $ref: "#/components/responses/UnknownAgent"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    post:
+      tags: [Run]
+      summary: One-off agent run (workflow prompt), agent via body
+      operationId: runPost
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent:
+                  type: string
+                  example: build
+      responses:
+        "200":
+          description: Completed agent session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "400":
+          $ref: "#/components/responses/UnknownAgent"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /task:
+    post:
+      tags: [Tasks]
+      summary: Ingest a task into the event bus (publishes task.received)
+      operationId: ingTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskInput"
+      responses:
+        "200":
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, received]
+                properties:
+                  ok:
+                    type: boolean
+                  received:
+                    type: string
+                    description: task externalId
+                    example: t-42
+        "400":
+          description: Missing externalId/title or invalid JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /module:
+    post:
+      tags: [Modules]
+      summary: Start a module pipeline run by title (matcher bypassed)
+      operationId: startModule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModuleRequest"
+      responses:
+        "202":
+          description: Run started asynchronously
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModuleStartResponse"
+        "400":
+          description: Missing title, unknown domain/action or invalid JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Pipeline not wired into this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /module/{runId}:
+    get:
+      tags: [Modules]
+      summary: Persisted pipeline state for a run
+      operationId: moduleStatus
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: run-cli-user-profile
+      responses:
+        "200":
+          description: Current pipeline state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, state]
+                properties:
+                  ok:
+                    type: boolean
+                  state:
+                    $ref: "#/components/schemas/PipelineState"
+        "404":
+          description: No such run (not started yet or unknown id)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: State store not wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /module/{runId}/stop:
+    post:
+      tags: [Modules]
+      summary: Stop an active pipeline run (transitions to cancelled)
+      operationId: stopModule
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: run-cli-user-profile
+      responses:
+        "200":
+          description: Stop signal delivered; the cancelled final arrives as pipeline.cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModuleStopResponse"
+        "404":
+          description: No such run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Run is not active (already terminal); current state is returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Pipeline or store not wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+/stream:
+    get:
+      tags: [Stream]
+      summary: SSE stream of platform events (snapshot + live)
+      description: |
+        Server-Sent-Events endpoint used by the web dashboard. It first emits
+        a `snapshot` event carrying the recent event history, then pushes live
+        events (`task.received`, `pipeline.phase`, `pipeline.done`,
+        `pipeline.failed`, `pipeline.cancelled`) as they are published to the
+        bus. Event source buffers up to `EVENT_HISTORY_LIMIT` events (default 200).
+      responses:
+        "200":
+          description: text/event-stream connection (kept open; ~15s pings)
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: text/event-stream; charset=utf-8
+          content:
+            text/event-stream:
+              schema:
+                type: object
+                description: Each `data:` frame is a JSON WorkflowEvent; snapshot frames carry { events }.
+              examples:
+                snapshot:
+                  summary: Initial snapshot frame
+                  value:
+                    event: snapshot
+                    data: '{"events":[{"type":"task.received","task":{"externalId":"t-42","source":"web","title":"Create billing module"}}],"ts":1789297981698}'
+                phase:
+                  summary: Live phase frame
+                  value:
+                    event: pipeline.phase
+                    data: '{"type":"pipeline.phase","runId":"run-cli-user-profile","phase":"implementation","ts":1789298079000}'
+
+components:
+  schemas:
+    ModuleAction:
+      type: string
+      enum: [add, update, delete, decompose]
+      description: Module-development strategy.
+    ModuleDomain:
+      type: string
+      enum: [nestjs, dotnet, frontend, general]
+      description: Target module domain.
+    PipelinePhase:
+      type: string
+      enum: [spec, planning, tests, implementation, verification, done, failed, cancelled]
+      description: Phase machine state of a pipeline run.
+    Attachment:
+      type: object
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+        kind:
+          type: string
+          enum: [image, file, link]
+    Task:
+      type: object
+      description: Normalised, source-agnostic workflow task.
+      required: [externalId, source, title, createdAt]
+      properties:
+        externalId:
+          type: string
+          description: Stable id used for dedup (e.g. Trello card id; slug from CLI).
+        source:
+          type: string
+          description: Origin identifier (file, trello, cli, web, …).
+        title:
+          type: string
+        description:
+          type: string
+        url:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attachment"
+        createdAt:
+          type: string
+          format: date-time
+        meta:
+          type: object
+          additionalProperties: true
+    TaskInput:
+      allOf:
+        - $ref: "#/components/schemas/Task"
+        - type: object
+          description: Wire input for POST /task. Only externalId and title are validated.
+          required: [externalId, title]
+    RunResponse:
+      type: object
+      description: Result of a one-off agent session.
+      required: [ok, prompt, agent, sessionId, response, durationMs]
+      properties:
+        ok:
+          type: boolean
+        prompt:
+          type: string
+          description: The workflow prompt that was executed.
+          example: Test
+        agent:
+          type: string
+          description: Resolved agent (default build).
+        sessionId:
+          type: string
+          example: ses_f66c238c6ffeoKoSwtUDOm3mQu
+        response:
+          type: string
+          description: Final assistant text (may be empty).
+        durationMs:
+          type: integer
+    ModuleRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          description: Module title/description; drives domain and action detection.
+        domain:
+          $ref: "#/components/schemas/ModuleDomain"
+        action:
+          $ref: "#/components/schemas/ModuleAction"
+    ModuleStartResponse:
+      type: object
+      required: [ok, runId, domain, action]
+      properties:
+        ok:
+          type: boolean
+        runId:
+          type: string
+          description: run-<source>-<externalId>; source is cli for /module.
+          example: run-cli-user-profile
+        domain:
+          $ref: "#/components/schemas/ModuleDomain"
+        action:
+          $ref: "#/components/schemas/ModuleAction"
+    ModuleStopResponse:
+      type: object
+      description: Acknowledgement of a stop request.
+      required: [ok, runId, stopped]
+      properties:
+        ok:
+          type: boolean
+        runId:
+          type: string
+        stopped:
+          type: boolean
+          description: True when the stop signal reached an active run.
+    PipelineState:
+      type: object
+      description: Persisted snapshot of a pipeline run.
+      required: [runId, phase, externalId, source, attempts, action]
+      properties:
+        runId:
+          type: string
+        phase:
+          $ref: "#/components/schemas/PipelinePhase"
+        externalId:
+          type: string
+        source:
+          type: string
+        attempts:
+          type: integer
+          description: Verification retries already used.
+        action:
+          $ref: "#/components/schemas/ModuleAction"
+        error:
+          type: string
+          description: Present on failed runs.
+    Error:
+      type: object
+      description: Uniform error body.
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: string
+        agents:
+          type: array
+          description: Known agents on unknown-agent errors.
+          items:
+            type: string
+        domains:
+          type: array
+          description: Allowed domains on validation errors.
+          items:
+            type: string
+        actions:
+          type: array
+          description: Allowed actions on validation errors.
+          items:
+            type: string
+  responses:
+    UnknownAgent:
+      description: Requested agent is not known to the server
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServerError:
+      description: Unexpected error (agents probe, session run)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
