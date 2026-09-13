@@ -128,6 +128,9 @@ export class HttpApiController {
       return this.handleModuleStart(req);
     }
 
+    const moduleStop = /^\/module\/([^/]+)\/stop$/.exec(url.pathname);
+    if (moduleStop && moduleStop[1] && req.method === "POST") {
+      return this.handleModuleStop(moduleStop[1]);
     }
 
     const moduleStatus = /^\/module\/([^/]+)$/.exec(url.pathname);
@@ -199,6 +202,28 @@ export class HttpApiController {
       return Response.json({ ok: false, error: `no run ${runId}` }, { status: 404 });
     }
     return Response.json({ ok: true, state });
+  }
+
+  /**
+   * Остановка активного рана: 404 — ран неизвестен, 409 — ран уже
+   * в терминальном состоянии, 200 — сигнал остановки доставлен
+   * (финал cancelled придёт событием pipeline.cancelled).
+   */
+  private async handleModuleStop(runId: string): Promise<Response> {
+    if (!this.pipeline) {
+      return Response.json({ ok: false, error: "pipeline not configured" }, { status: 501 });
+    }
+    if (!this.store) {
+      return Response.json({ ok: false, error: "store not configured" }, { status: 501 });
+    }
+    const state = await this.store.load(runId);
+    if (!state) {
+      return Response.json({ ok: false, error: `no run ${runId}` }, { status: 404 });
+    }
+    if (!this.pipeline.stop(runId)) {
+      return Response.json({ ok: false, error: `run ${runId} is not active`, state }, { status: 409 });
+    }
+    return Response.json({ ok: true, runId, stopped: true });
   }
 
   private async handleRun(agent?: string): Promise<Response> {

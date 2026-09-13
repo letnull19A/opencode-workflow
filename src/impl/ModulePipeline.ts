@@ -33,10 +33,13 @@ const BACK_TO: Readonly<Partial<Record<ModuleAction, PipelinePhase>>> = {
  * Машина состояний разработки модуля. Стартует из задачи: определяет воркер
  * по домену и действию, гонит фазы с возвратом к тестам (add/update) или
  * реализации (delete) на провале verification; исчерпание бюджета → failed.
+ * Активные раны трекаются в running и останавливаются через stop() — ран
+ * переходит в cancelled, ожидание сессии в исполнителе абортится.
  */
 export class ModulePipeline {
   private readonly maxAttempts: number;
   private readonly fallback: IModuleWorker = new GeneralModuleWorker();
+  private readonly running = new Map<string, AbortController>();
 
   constructor(
     private readonly executor: IAgentExecutor,
@@ -55,6 +58,33 @@ export class ModulePipeline {
     action: ModuleAction
   ): Promise<IPipelineState> {
     const runId = `run-${task.source}-${task.externalId}`;
+    const stopper = new AbortController();
+    this.running.set(runId, stopper);
+    try {
+      return await this.run(task, domain, action, runId, stopper.signal);
+    } finally {
+      this.running.delete(runId);
+    }
+  }
+
+  /**
+   * Остановка активного рана: true — сигнал доставлен, ран перейдёт
+   * в cancelled; false — ран не выполняется этим процессом.
+   */
+  stop(runId: string): boolean {
+    const stopper = this.running.get(runId);
+    if (!stopper) return false;
+    stopper.abort();
+    return true;
+  }
+
+  private async run(
+    task: IWorkflowTask,
+    domain: ModuleDomain,
+    action: ModuleAction,
+    runId: string,
+    signal: AbortSignal
+  ): Promise<IPipelineState> {
     const phases = ACTION_PHASES[action];
     const worker = this.pickWorker(domain, action);
     let state: IPipelineState = {
@@ -68,12 +98,14 @@ export class ModulePipeline {
     let cursor = 0;
 
     while (cursor < phases.length) {
+      if (signal.aborted) return this.cancel(state);
       const phase = phases[cursor];
       if (!phase) break;
       state = { ...state, phase };
       await this.persist(state);
 
-      const verdict = await this.runPhase(task, worker, action, phase);
+      const verdict = await this.runPhase(task, worker, action, phase, signal);
+      if (signal.aborted) return this.cancel(state);
 
       if (phase === "verification") {
         if (verdict.error) {
@@ -129,17 +161,30 @@ export class ModulePipeline {
     this.bus.publish({ type: "pipeline.phase", runId: state.runId, phase: state.phase });
   }
 
+  /**
+   * Финал остановки: состояние cancelled пишется напрямую (без pipeline.phase,
+   * чтобы фаза-терминал не попала в граф как текущая), затем — событие отмены.
+   */
+  private async cancel(state: IPipelineState): Promise<IPipelineState> {
+    const cancelled: IPipelineState = { ...state, phase: "cancelled", error: undefined };
+    await this.store.save(cancelled);
+    this.bus.publish({ type: "pipeline.cancelled", runId: cancelled.runId });
+    return cancelled;
+  }
+
   private async runPhase(
     task: IWorkflowTask,
     worker: IModuleWorker,
     action: ModuleAction,
-    phase: PipelinePhase
+    phase: PipelinePhase,
+    signal: AbortSignal
   ): Promise<{ pass: boolean; error?: string }> {
     try {
       const result = await this.executor.runSession({
         agent: worker.agentFor(action, phase),
         sessionTitle: `${task.title} — ${phase}`,
         prompt: worker.promptFor(action, phase, task),
+        signal,
       });
       return { pass: worker.verify(result.text) };
     } catch (err) {

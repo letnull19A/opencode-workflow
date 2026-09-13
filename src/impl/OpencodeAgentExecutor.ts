@@ -108,7 +108,9 @@ export class OpencodeAgentExecutor implements IAgentExecutor {
     prompt: string;
     agent?: string;
     sessionTitle?: string;
+    signal?: AbortSignal;
   }): Promise<PromptSessionResult> {
+    if (opts.signal?.aborted) throw new Error("run stopped");
     const session = await this.client.session.create({
       body: { title: opts.sessionTitle ?? WORKFLOW_TITLE },
     });
@@ -123,22 +125,23 @@ export class OpencodeAgentExecutor implements IAgentExecutor {
       },
     });
 
-    const text = await this.waitForCompletion(sessionId);
+    const text = await this.waitForCompletion(sessionId, opts.signal);
     return { sessionId, text };
   }
 
   /**
    * Ожидание завершения turn'а поллингом: закрываемся по completed-флагу
    * последнего сообщения либо по стабильности текста (fallback для провайдеров,
-   * не отдающих step-finish / completed).
+   * не отдающих step-finish / completed). Аборт сигнала — немедленный выход.
    */
-  private async waitForCompletion(sessionId: string): Promise<string> {
+  private async waitForCompletion(sessionId: string, signal?: AbortSignal): Promise<string> {
     const timeoutMs = Number(process.env.PHASE_TIMEOUT_MS ?? 20 * 60 * 1000);
     const settleMs = Number(process.env.PHASE_SETTLE_MS ?? 60 * 1000);
     const started = Date.now();
     let lastSignature = "";
 
     while (Date.now() - started < timeoutMs) {
+      if (signal?.aborted) throw new Error("run stopped");
       const res = await this.client.session.messages({ path: { id: sessionId } });
       const messages = res.data ?? [];
       let tailText = "";
@@ -164,9 +167,25 @@ export class OpencodeAgentExecutor implements IAgentExecutor {
         }
         lastSignature = signature;
       }
-      await new Promise((r) => setTimeout(r, 2000));
+      await this.abortableSleep(2000, signal);
     }
     throw new Error(`phase timed out after ${Math.round((Date.now() - started) / 1000)}s (session ${sessionId})`);
+  }
+
+  /** Пауза поллинга, прерываемая stop-сигналом пайплайна. */
+  private abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new Error("run stopped"));
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          reject(new Error("run stopped"));
+        },
+        { once: true }
+      );
+    });
   }
 
   async close(): Promise<void> {

@@ -6,5 +6,7 @@ export interface IAgentExecutor {
     prompt: string;
     agent?: string;
     sessionTitle?: string;
+    /** Остановка долгой сессии: пайплайн абортит ожидание и помечает ран cancelled. */
+    signal?: AbortSignal;
   }): Promise<PromptSessionResult>;
 }
