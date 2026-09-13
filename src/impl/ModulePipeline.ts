@@ -73,8 +73,13 @@ export class ModulePipeline {
       state = { ...state, phase };
       await this.persist(state);
 
+      const verdict = await this.runPhase(task, worker, action, phase);
+
       if (phase === "verification") {
-        const verdict = await this.runPhase(task, worker, action, phase);
+        if (verdict.error) {
+          state = { ...state, error: verdict.error };
+          await this.persist(state);
+        }
         if (verdict.pass) {
           state = { ...state, phase: "done" };
           await this.persist(state);
@@ -85,7 +90,7 @@ export class ModulePipeline {
           state = {
             ...state,
             phase: "failed",
-            error: `verification failed after ${state.attempts + 1} attempt(s)`,
+            error: verdict.error ?? `verification failed after ${state.attempts + 1} attempt(s)`,
           };
           await this.persist(state);
           this.bus.publish({
@@ -100,7 +105,12 @@ export class ModulePipeline {
         continue;
       }
 
-      await this.runPhase(task, worker, action, phase);
+      if (verdict.error) {
+        state = { ...state, phase: "failed", error: verdict.error };
+        await this.persist(state);
+        this.bus.publish({ type: "pipeline.failed", runId, error: verdict.error });
+        return state;
+      }
       cursor += 1;
     }
 
@@ -124,12 +134,18 @@ export class ModulePipeline {
     worker: IModuleWorker,
     action: ModuleAction,
     phase: PipelinePhase
-  ): Promise<{ pass: boolean }> {
-    const result = await this.executor.runSession({
-      agent: worker.agentFor(action, phase),
-      sessionTitle: `${task.title} — ${phase}`,
-      prompt: worker.promptFor(action, phase, task),
-    });
-    return { pass: worker.verify(result.text) };
+  ): Promise<{ pass: boolean; error?: string }> {
+    try {
+      const result = await this.executor.runSession({
+        agent: worker.agentFor(action, phase),
+        sessionTitle: `${task.title} — ${phase}`,
+        prompt: worker.promptFor(action, phase, task),
+      });
+      return { pass: worker.verify(result.text) };
+    } catch (err) {
+      const error = String(err);
+      console.warn(`[pipeline] phase ${phase} error: ${error}`);
+      return { pass: false, error };
+    }
   }
 }

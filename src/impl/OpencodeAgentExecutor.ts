@@ -115,7 +115,7 @@ export class OpencodeAgentExecutor implements IAgentExecutor {
     const sessionId = session.data?.id;
     if (!sessionId) throw new Error("session not created");
 
-    const result = await this.client.session.prompt({
+    await this.client.session.promptAsync({
       path: { id: sessionId },
       body: {
         ...(opts.agent ? { agent: opts.agent } : {}),
@@ -123,15 +123,50 @@ export class OpencodeAgentExecutor implements IAgentExecutor {
       },
     });
 
-    const text = (result.data?.parts ?? [])
-      .filter((p) => p.type === "text")
-      .map((p) => p.text)
-      .join("");
+    const text = await this.waitForCompletion(sessionId);
+    return { sessionId, text };
+  }
 
-    return {
-      sessionId,
-      text: text || JSON.stringify(result.data),
-    };
+  /**
+   * Ожидание завершения turn'а поллингом: закрываемся по completed-флагу
+   * последнего сообщения либо по стабильности текста (fallback для провайдеров,
+   * не отдающих step-finish / completed).
+   */
+  private async waitForCompletion(sessionId: string): Promise<string> {
+    const timeoutMs = Number(process.env.PHASE_TIMEOUT_MS ?? 20 * 60 * 1000);
+    const settleMs = Number(process.env.PHASE_SETTLE_MS ?? 60 * 1000);
+    const started = Date.now();
+    let lastSignature = "";
+
+    while (Date.now() - started < timeoutMs) {
+      const res = await this.client.session.messages({ path: { id: sessionId } });
+      const messages = res.data ?? [];
+      let tailText = "";
+      let tailCreated = 0;
+      let tailCompleted = false;
+      for (const m of messages) {
+        const info = m.info as { role?: string; time?: { created?: number; completed?: number } } | undefined;
+        if (info?.role !== "assistant") continue;
+        const text = (m.parts ?? [])
+          .filter((p) => p.type === "text")
+          .map((p) => p.text)
+          .join("");
+        if (!text) continue;
+        tailText = text;
+        tailCreated = info.time?.created ?? tailCreated;
+        tailCompleted = Boolean(info.time?.completed);
+      }
+      if (tailText) {
+        const signature = `${tailCompleted}:${tailText.length}:${tailCreated}`;
+        if (tailCompleted) return tailText;
+        if (signature === lastSignature && Date.now() - tailCreated >= settleMs) {
+          return tailText;
+        }
+        lastSignature = signature;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    throw new Error(`phase timed out after ${Math.round((Date.now() - started) / 1000)}s (session ${sessionId})`);
   }
 
   async close(): Promise<void> {
