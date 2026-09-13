@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const pipeline = new ModulePipeline(executor, store, bus, registry);
   const matcher = new ModuleMatcher(bus, pipeline);
 
-  const controller = new HttpApiController(executor, bus, Number(process.env.PORT ?? 8787));
+  const controller = new HttpApiController(executor, bus, Number(process.env.PORT ?? 8787), pipeline, store);
   controller.start();
 
   const shutdown = async () => {

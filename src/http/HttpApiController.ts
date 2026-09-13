@@ -2,16 +2,26 @@ import type { Server } from "bun";
 import type { IAgentExecutor } from "../core/executor.ts";
 import type { IEventBus } from "../core/events.ts";
 import type { IWorkflowTask } from "../core/task.ts";
+import type { IPipelineStateStore } from "../core/pipeline.ts";
+import type { ModuleAction, ModuleDomain } from "../core/types.ts";
 import { WORKFLOW_PROMPT } from "../impl/OpencodeAgentExecutor.ts";
+import { detectAction, detectDomain } from "../impl/ModuleMatcher.ts";
+import { slugify } from "../impl/slug.ts";
+import type { ModulePipeline } from "../impl/ModulePipeline.ts";
 
-/** HTTP-слой платформы: /health, /agents, /run, /task поверх IAgentExecutor + IEventBus. */
+const KNOWN_ACTIONS: readonly ModuleAction[] = ["add", "update", "delete", "decompose"];
+const KNOWN_DOMAINS: readonly ModuleDomain[] = ["nestjs", "dotnet", "frontend", "general"];
+
+/** HTTP-слой платформы: /health, /agents, /run, /task, /module поверх IAgentExecutor + IEventBus. */
 export class HttpApiController {
   private server?: Server<undefined>;
 
   constructor(
     private readonly executor: IAgentExecutor,
     private readonly bus: IEventBus,
-    private readonly port: number = Number(process.env.PORT ?? 8787)
+    private readonly port: number = Number(process.env.PORT ?? 8787),
+    private readonly pipeline?: ModulePipeline,
+    private readonly store?: IPipelineStateStore
   ) {}
 
   start(): void {
@@ -50,6 +60,15 @@ export class HttpApiController {
       return this.handleTaskIngest(req);
     }
 
+    if (url.pathname === "/module" && req.method === "POST") {
+      return this.handleModuleStart(req);
+    }
+
+    const moduleStatus = /^\/module\/([^/]+)$/.exec(url.pathname);
+    if (moduleStatus && moduleStatus[1] && req.method === "GET") {
+      return this.handleModuleStatus(moduleStatus[1]);
+    }
+
     return Response.json({ ok: false, error: "not found" }, { status: 404 });
   }
 
@@ -67,6 +86,53 @@ export class HttpApiController {
     } catch (err) {
       return Response.json({ ok: false, error: String(err) }, { status: 400 });
     }
+  }
+
+  private async handleModuleStart(req: Request): Promise<Response> {
+    if (!this.pipeline) {
+      return Response.json({ ok: false, error: "pipeline not configured" }, { status: 501 });
+    }
+    try {
+      const body = (await req.json()) as { title?: unknown; domain?: unknown; action?: unknown };
+      const title = typeof body?.title === "string" ? body.title.trim() : "";
+      if (!title) {
+        return Response.json({ ok: false, error: "module требует title" }, { status: 400 });
+      }
+      const domain = body.domain as ModuleDomain | undefined;
+      const action = body.action as ModuleAction | undefined;
+      if (domain && !KNOWN_DOMAINS.includes(domain)) {
+        return Response.json({ ok: false, error: `unknown domain "${domain}"`, domains: KNOWN_DOMAINS }, { status: 400 });
+      }
+      if (action && !KNOWN_ACTIONS.includes(action)) {
+        return Response.json({ ok: false, error: `unknown action "${action}"`, actions: KNOWN_ACTIONS }, { status: 400 });
+      }
+      const task: IWorkflowTask = {
+        externalId: slugify(title),
+        source: "cli",
+        title,
+        createdAt: new Date().toISOString(),
+      };
+      const resolvedDomain = domain ?? detectDomain(title);
+      const resolvedAction = action ?? detectAction(title);
+      const runId = `run-${task.source}-${task.externalId}`;
+      void this.pipeline
+        .start(task, resolvedDomain, resolvedAction)
+        .catch((err) => console.error(`[module] ${runId}: ${String(err)}`));
+      return Response.json({ ok: true, runId, domain: resolvedDomain, action: resolvedAction }, { status: 202 });
+    } catch (err) {
+      return Response.json({ ok: false, error: String(err) }, { status: 400 });
+    }
+  }
+
+  private async handleModuleStatus(runId: string): Promise<Response> {
+    if (!this.store) {
+      return Response.json({ ok: false, error: "store not configured" }, { status: 501 });
+    }
+    const state = await this.store.load(runId);
+    if (!state) {
+      return Response.json({ ok: false, error: `no run ${runId}` }, { status: 404 });
+    }
+    return Response.json({ ok: true, state });
   }
 
   private async handleRun(agent?: string): Promise<Response> {
