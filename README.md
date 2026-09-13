@@ -4,10 +4,10 @@ Demo of working with opencode through `@opencode-ai/sdk` on Bun: send a prompt, 
 
 ## Files
 
-- `src/impl/OpencodeAgentExecutor.ts` — connection to opencode (attach or self-start), auto-approval of permissions, run of the hardcoded `"Test"` prompt.
-- `src/impl/ModulePipeline.ts` — module-building state machine: `spec → planning → tests → implementation → verification`; on verification FAIL → back to `tests`, budget of retries (`PIPELINE_MAX_RETRIES`), on exhaustion → `failed`; persists state via `IPipelineStateStore`.
-- `src/impl/ModuleMatcher.ts` — subscribes to `task.received`, matches “create new module” tasks via `defaultMatch`, detects domain (`nestjs`/`dotnet`/`frontend`/`general`) and starts the pipeline.
-- `src/core/worker.ts` + `src/impl/BaseModuleWorker.ts` — `IModuleWorker` contract and base class; domain workers: `NestJSModuleWorker` (jest), `DotNetModuleWorker` (dotnet test), `GeneralModuleWorker` (fallback). Re-exported from `src/workers/index.ts`.
+- `src/impl/OpencodeAgentExecutor.ts` — connection to opencode (attach or self-start), auto-approval of permissions, run of the `"Test"` prompt (or per-phase agent).
+- `src/impl/ModulePipeline.ts` — module-building state machine with action strategies (`ACTION_PHASES`): `add` → `spec → planning → tests → implementation → verification`; `update` → `tests → implementation → verification`; `delete` → `implementation → verification`; `decompose` → `spec → planning` (no code). On verification FAIL → back to `tests` (`update`) / `implementation` (`delete`), retry budget (`PIPELINE_MAX_RETRIES`), on exhaustion → `failed`; persists state via `IPipelineStateStore`. Each phase runs through the worker's proxy agent.
+- `src/impl/ModuleMatcher.ts` — subscribes to `task.received`, detects the strategy keyword (`add`/`update`/`delete`/`decompose`, priority decompose → delete → update → add), domain (`nestjs`/`dotnet`/`frontend`/`general`) and starts the pipeline.
+- `src/core/worker.ts` + `src/impl/BaseModuleWorker.ts` — `IModuleWorker` contract and base class; domain workers: `NestJSModuleWorker` (jest), `DotNetModuleWorker` (dotnet test), `GeneralModuleWorker` (fallback). Re-exported from `src/workers/index.ts`. Phases are proxied to pack agents via `agentFor`: `tests` → `unit-test`, `update`/`delete`/`decompose` implementation → `refactor`.
 - `src/impl/ConfigWorkerRegistry.ts` — `IWorkerRegistry`: domain+action → `IModuleWorker[]` (exact domain wins, `general` is the fallback).
 - `src/impl/TaskWatcher.ts` — poll bridge: new tasks from a source → `task.received` event → ack; processed state in `<STATE_DIR>/processed.json`.
 - `src/impl/TrelloTaskSource.ts` / `src/impl/FileTaskSource.ts` — `ITaskSource` implementations (Trello REST / local JSON).

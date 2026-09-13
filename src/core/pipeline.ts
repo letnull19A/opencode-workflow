@@ -1,4 +1,4 @@
-import type { PipelinePhase } from "./types.ts";
+import type { ModuleAction, PipelinePhase } from "./types.ts";
 
 export interface IPipelineState {
   runId: string;
@@ -6,6 +6,7 @@ export interface IPipelineState {
   externalId: string;
   source: string;
   attempts: number;
+  action: ModuleAction;
   error?: string;
 }
 

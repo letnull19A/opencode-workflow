@@ -5,6 +5,7 @@ export interface IModuleWorker {
   readonly id: string;
   readonly domain: ModuleDomain;
   canHandle(action: ModuleAction): boolean;
-  promptFor(phase: PipelinePhase, task: IWorkflowTask): string;
+  promptFor(action: ModuleAction, phase: PipelinePhase, task: IWorkflowTask): string;
   verify(text: string): boolean;
+  agentFor(action: ModuleAction, phase: PipelinePhase): string | undefined;
 }

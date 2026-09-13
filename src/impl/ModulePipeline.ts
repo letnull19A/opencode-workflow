@@ -3,7 +3,7 @@ import type { IEventBus } from "../core/events.ts";
 import type { IPipelineState, IPipelineStateStore } from "../core/pipeline.ts";
 import type { IWorkerRegistry } from "../core/registry.ts";
 import type { IWorkflowTask } from "../core/task.ts";
-import type { ModuleDomain, PipelinePhase } from "../core/types.ts";
+import type { ModuleAction, ModuleDomain, PipelinePhase } from "../core/types.ts";
 import type { IModuleWorker } from "../core/worker.ts";
 import { GeneralModuleWorker } from "./GeneralModuleWorker.ts";
 
@@ -11,19 +11,28 @@ export interface ModulePipelineConfig {
   maxAttempts?: number;
 }
 
-const PHASE_ORDER: readonly PipelinePhase[] = [
-  "spec",
-  "planning",
-  "tests",
-  "implementation",
-  "verification",
-];
+/**
+ * Стратегии действий: порядок фаз и фаза возврата на провале verification.
+ * add — полный цикл (spec…verification), update — tests-first, delete —
+ * удаление + проверка, decompose — только проектирование (spec + plan без кода).
+ */
+export const ACTION_PHASES: Readonly<Record<ModuleAction, readonly PipelinePhase[]>> = {
+  add: ["spec", "planning", "tests", "implementation", "verification"],
+  update: ["tests", "implementation", "verification"],
+  delete: ["implementation", "verification"],
+  decompose: ["spec", "planning"],
+};
+
+const BACK_TO: Readonly<Partial<Record<ModuleAction, PipelinePhase>>> = {
+  add: "tests",
+  update: "tests",
+  delete: "implementation",
+};
 
 /**
- * Пайплайн разработки модуля: линейные фазы spec → planning → tests →
- * implementation → verification; при провале verification возврат в tests
- * (бюджет повторов), исчерпание бюджета → failed. Каждую фазу исполняет
- * воркер из IWorkerRegistry (fallback — GeneralModuleWorker).
+ * Машина состояний разработки модуля. Стартует из задачи: определяет воркер
+ * по домену и действию, гонит фазы с возвратом к тестам (add/update) или
+ * реализации (delete) на провале verification; исчерпание бюджета → failed.
  */
 export class ModulePipeline {
   private readonly maxAttempts: number;
@@ -40,26 +49,32 @@ export class ModulePipeline {
       ?? Number(process.env.PIPELINE_MAX_RETRIES ?? 3);
   }
 
-  async start(task: IWorkflowTask, domain: ModuleDomain): Promise<IPipelineState> {
+  async start(
+    task: IWorkflowTask,
+    domain: ModuleDomain,
+    action: ModuleAction
+  ): Promise<IPipelineState> {
     const runId = `run-${task.source}-${task.externalId}`;
+    const phases = ACTION_PHASES[action];
+    const worker = this.pickWorker(domain, action);
     let state: IPipelineState = {
       runId,
-      phase: "spec",
+      phase: phases[0] ?? "spec",
       externalId: task.externalId,
       source: task.source,
       attempts: 0,
+      action,
     };
-    const worker = this.pickWorker(domain);
+    let cursor = 0;
 
-    let cursor = PHASE_ORDER.indexOf("spec");
-    while (cursor < PHASE_ORDER.length) {
-      const phase = PHASE_ORDER[cursor];
+    while (cursor < phases.length) {
+      const phase = phases[cursor];
       if (!phase) break;
       state = { ...state, phase };
       await this.persist(state);
 
       if (phase === "verification") {
-        const verdict = await this.runPhase(task, worker, phase);
+        const verdict = await this.runPhase(task, worker, action, phase);
         if (verdict.pass) {
           state = { ...state, phase: "done" };
           await this.persist(state);
@@ -81,11 +96,11 @@ export class ModulePipeline {
           return state;
         }
         state = { ...state, attempts: state.attempts + 1 };
-        cursor = PHASE_ORDER.indexOf("tests");
+        cursor = phases.indexOf(BACK_TO[action] ?? "tests");
         continue;
       }
 
-      await this.runPhase(task, worker, phase);
+      await this.runPhase(task, worker, action, phase);
       cursor += 1;
     }
 
@@ -95,8 +110,8 @@ export class ModulePipeline {
     return state;
   }
 
-  private pickWorker(domain: ModuleDomain): IModuleWorker {
-    return this.registry.resolve(domain, "add")[0] ?? this.fallback;
+  private pickWorker(domain: ModuleDomain, action: ModuleAction): IModuleWorker {
+    return this.registry.resolve(domain, action)[0] ?? this.fallback;
   }
 
   private async persist(state: IPipelineState): Promise<void> {
@@ -107,11 +122,13 @@ export class ModulePipeline {
   private async runPhase(
     task: IWorkflowTask,
     worker: IModuleWorker,
+    action: ModuleAction,
     phase: PipelinePhase
   ): Promise<{ pass: boolean }> {
     const result = await this.executor.runSession({
+      agent: worker.agentFor(action, phase),
       sessionTitle: `${task.title} — ${phase}`,
-      prompt: worker.promptFor(phase, task),
+      prompt: worker.promptFor(action, phase, task),
     });
     return { pass: worker.verify(result.text) };
   }

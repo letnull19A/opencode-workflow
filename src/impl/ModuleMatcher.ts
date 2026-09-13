@@ -1,5 +1,5 @@
 import type { IEventBus } from "../core/events.ts";
-import type { ModuleDomain } from "../core/types.ts";
+import type { ModuleAction, ModuleDomain } from "../core/types.ts";
 import type { ModulePipeline } from "./ModulePipeline.ts";
 
 export interface ModuleMatcherConfig {
@@ -7,6 +7,9 @@ export interface ModuleMatcherConfig {
 }
 
 const ADD_KEYWORDS = /создать?|новый модуль|create|add|implement|разработ[ае]|module|feature/i;
+const UPDATE_KEYWORDS = /обнови|измени|попра[вв]|update|change|refactor|передела/i;
+const DELETE_KEYWORDS = /удали|убери|remove|delete|почисти/i;
+const DECOMPOSE_KEYWORDS = /декомпози|разб[ие]|split|decouple|разнеси|разнест|дроб/i;
 const DOMAIN_PATTERNS: Array<[ModuleDomain, RegExp]> = [
   ["nestjs", /nestjs?|nest\b/i],
   ["dotnet", /\.net\b|dotnet|c#|csharp/i],
@@ -14,9 +17,9 @@ const DOMAIN_PATTERNS: Array<[ModuleDomain, RegExp]> = [
 ];
 
 /**
- * Матчер «создать новый модуль»: подписан на task.received, решает по
- * заголовку, что задача — добавление модуля, определяет домен и запускает
- * ModulePipeline. Задачи не про «создание» игнорируются (ack уже сделал watcher).
+ * Матчер: подписан на task.received, по заголовку определяет стратегию
+ * (ModuleAction) и домен, запускает ModulePipeline. Типы действий имеют
+ * приоритет: decompose → delete → update → add.
  */
 export class ModuleMatcher {
   private readonly match: (title: string) => boolean;
@@ -30,9 +33,11 @@ export class ModuleMatcher {
     this.match = config?.match ?? defaultMatch;
     this.unsubscribe = bus.subscribe((event) => {
       if (event.type !== "task.received") return;
-      if (!this.match(event.task.title)) return;
+      const title = event.task.title;
+      if (!this.match(title)) return;
+      const action = detectAction(title);
       void this.pipeline
-        .start(event.task, detectDomain(event.task.title))
+        .start(event.task, detectDomain(title), action)
         .then((state) => {
           console.log(`[pipeline] ${state.runId} finished in ${state.phase}${state.error ? `: ${state.error}` : ""}`);
         })
@@ -45,7 +50,15 @@ export class ModuleMatcher {
   }
 }
 
-export const defaultMatch = (title: string): boolean => ADD_KEYWORDS.test(title);
+export const defaultMatch = (title: string): boolean =>
+  ADD_KEYWORDS.test(title) || UPDATE_KEYWORDS.test(title) || DELETE_KEYWORDS.test(title) || DECOMPOSE_KEYWORDS.test(title);
+
+export function detectAction(title: string): ModuleAction {
+  if (DECOMPOSE_KEYWORDS.test(title)) return "decompose";
+  if (DELETE_KEYWORDS.test(title)) return "delete";
+  if (UPDATE_KEYWORDS.test(title)) return "update";
+  return "add";
+}
 
 export function detectDomain(title: string): ModuleDomain {
   for (const [domain, pattern] of DOMAIN_PATTERNS) {
