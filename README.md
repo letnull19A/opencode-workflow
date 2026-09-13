@@ -58,6 +58,19 @@ bun run typecheck            # tsc --noEmit (TypeScript 7, typecheck-only)
 
 In attach mode the running server's config and model are used, not the local ones (`permission: allow` and `reasoningEffort: minimal` apply only to a self-started server).
 
+## Container (Docker)
+
+The image bundles `bun`, the `opencode` CLI (self-started server) and the `.opencode/` pack. Default command is the webhook on `:8787`.
+
+```bash
+docker build -t opencode-workflow .
+docker run -p 8787:8787 -d opencode-workflow
+curl http://127.0.0.1:8787/health
+curl http://127.0.0.1:8787/agents        # pack agents (build, unit-test, refactor, …)
+```
+
+`bun.lock` is committed for reproducible installs (`--frozen-lockfile`). Secrets (Trello, opencode server auth) are passed only via env: `docker run -e TRELLO_API_KEY=… -e TRELLO_TOKEN=…`.
+
 ## E2E (NestJS sandbox)
 
 A smoke E2E runs the pipeline against a real opencode server from an isolated sandbox dir:

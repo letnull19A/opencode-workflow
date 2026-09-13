@@ -1,0 +1,9 @@
+**/node_modules/
+**/.git
+**/.gitmodules
+.gitignore
+.env
+**/*.log
+nohup.out
+Dockerfile
+.dockerignore
