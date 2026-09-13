@@ -31,11 +31,22 @@ For an existing clone: `git submodule update --init`.
 
 ```bash
 bun run start refactor       # single run with the refactor agent (default is build)
+bun run start module "Пользователи"   # module pipeline by name (add/update/… auto-detected)
+bun run start module "Пользователи" --domain nestjs --action add   # or explicit
 bun run webhook              # webhook on :8787
 PORT=9000 bun run webhook
 bun run watch                # poll task source (TASK_SOURCE=file|trello) → events → ack
 bun run typecheck            # tsc --noEmit (TypeScript 7, typecheck-only)
 ```
+
+Module runs (CLI and HTTP) go through the same strategies as the task watcher
+(see below): `add` → `spec → planning → tests → implementation → verification`,
+`update` → `tests → implementation → verification`, `delete` →
+`implementation → verification`, `decompose` → `spec → planning`.
+
+HTTP endpoints: `POST /module` starts a run from a module title
+(`{ title, domain?, action? }` → `202 { runId, domain, action }`),
+`GET /module/:runId` returns the persisted pipeline state (`done`/`failed`/phase).
 
 ## Env
 
@@ -55,6 +66,8 @@ bun run typecheck            # tsc --noEmit (TypeScript 7, typecheck-only)
 | `TRELLO_INBOX_LIST` | inbox list to fetch tasks from (default `Inbox`) |
 | `TRELLO_DONE_LIST` | list for ack (move card, default `Done`) |
 | `PIPELINE_MAX_RETRIES` | verification-retry budget for the module pipeline (default `3`) |
+| `PHASE_TIMEOUT_MS` | per-phase model budget (default `1200000` = 20 min; timeout → run fails) |
+| `PHASE_SETTLE_MS` | silence window that ends a phase for providers missing step-finish events (default `60000`) |
 
 In attach mode the running server's config and model are used, not the local ones (`permission: allow` and `reasoningEffort: minimal` apply only to a self-started server).
 
@@ -82,3 +95,8 @@ bun --offline scripts/e2e/module-pipeline.ts   # or inline with a real executor
 ```
 
 Expected flow: `spec → planning → tests → implementation → verification → done` (or `failed` if the suite never passes), intermediates persisted in the pipeline state store. See `src/impl/ModulePipeline.ts` for phase semantics.
+
+Live runs were verified to `done` on both `add` (full 5-phase cycle) and `decompose`
+(2-phase, `spec → planning`). Phase completion is detected by polling the session
+(messages with `completed` flag, or stable output after `PHASE_SETTLE_MS`), so runs
+finish even for providers that never emit a dedicated step-finish event.
