@@ -6,7 +6,20 @@
 		"start": "bun src/cli/index.ts",
 		"webhook": "bun src/http/main.ts",
 		"watch": "bun src/cli/watcher.ts",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"docs:dev": "vitepress dev docs",
+		"docs:build": "vitepress build docs",
+		"docs:preview": "vitepress preview docs",
+		"web:dev": "bun --cwd=web run dev",
+		"web:build": "bun --cwd=web run build",
+		"web:preview": "bun --cwd=web run preview",
+		"dev": "pm2 start ecosystem.config.cjs",
+		"dev:status": "pm2 status",
+		"dev:logs": "pm2 logs",
+		"dev:restart": "pm2 restart ecosystem.config.cjs",
+		"dev:save": "pm2 save",
+		"dev:stop": "pm2 stop ecosystem.config.cjs",
+		"dev:kill": "pm2 kill"
 	},
 	"dependencies": {
 		"@opencode-ai/sdk": "^1.18.30"
@@ -14,6 +27,8 @@
 	"packageManager": "pnpm@12.4.1+sha512.2e81e399d73fe8390dab25e06aa788ab7a5908248d2f5a370f82b481147a6a7a367bf8048f9a6fdb6460f21a66f0542dedb8b94ca2c8723596741920b1656d4c",
 	"devDependencies": {
 		"@types/bun": "^1.4.2",
-		"typescript": "^7.0.2"
+		"pm2": "^7.0.4",
+		"typescript": "^7.0.2",
+		"vitepress": "^1.6.4"
 	}
 }

@@ -7,3 +7,4 @@
 nohup.out
 Dockerfile
 .dockerignore
+docs/.vitepress/
