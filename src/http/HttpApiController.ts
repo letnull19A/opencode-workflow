@@ -1,12 +1,18 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Server } from "bun";
 import type { IAgentExecutor } from "../core/executor.ts";
 import type { IEventBus, IEventHistory, WorkflowEvent } from "../core/events.ts";
 import type { IWorkflowTask } from "../core/task.ts";
 import type { IPipelineStateStore } from "../core/pipeline.ts";
+import type { INodeRunner } from "../core/node.ts";
+import type { IWebhookBinding, IWebhookProvider, IWebhookStore, IWorkflowStarter } from "../core/webhook.ts";
+import type { IPipelineData } from "../core/pipeline-data.ts";
 import type { ModuleAction, ModuleDomain } from "../core/types.ts";
 import { WORKFLOW_PROMPT } from "../impl/OpencodeAgentExecutor.ts";
 import { detectAction, detectDomain } from "../impl/ModuleMatcher.ts";
 import { slugify } from "../impl/slug.ts";
+import { DepthFirstNodeRunner } from "../impl/DepthFirstNodeRunner.ts";
+import { WebhookEntrypointNode } from "../impl/WebhookEntrypointNode.ts";
 import type { ModulePipeline } from "../impl/ModulePipeline.ts";
 
 const KNOWN_ACTIONS: readonly ModuleAction[] = ["add", "update", "delete", "decompose"];
@@ -15,16 +21,35 @@ const KNOWN_DOMAINS: readonly ModuleDomain[] = ["nestjs", "dotnet", "frontend", 
 /** SSE keep-alive пинг, чтобы прокси/браузеры не рвали длинное соединение. */
 const SSE_PING_MS = 15000;
 
-/** HTTP-слой платформы: /health, /agents, /run, /task, /module, /stream поверх шины событий. */
+/** Верхняя граница множества отработанных delivery id (защита от необъятного роста). */
+const DELIVERY_DEDUP_LIMIT = 500;
+
+/** Человеко-удобный id биндинга вебхука без внешних зависимостей. */
+function randomHookId(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+export interface HttpApiWebhooks {
+  store: IWebhookStore;
+  providers: ReadonlyMap<string, IWebhookProvider>;
+  starter: IWorkflowStarter<IPipelineData>;
+}
+
+/** HTTP-слой платформы: /health, /agents, /run, /task, /module, /stream, /hooks. */
 export class HttpApiController {
   private server?: Server<undefined>;
+  private readonly runner: INodeRunner = new DepthFirstNodeRunner();
+  private readonly hookNodes = new Map<string, WebhookEntrypointNode<IPipelineData>>();
+  private readonly seenDeliveries = new Set<string>();
+  private readonly deliveryOrder: string[] = [];
 
   constructor(
     private readonly executor: IAgentExecutor,
     private readonly bus: IEventBus & IEventHistory,
     private readonly port: number = Number(process.env.PORT ?? 8787),
     private readonly pipeline?: ModulePipeline,
-    private readonly store?: IPipelineStateStore
+    private readonly store?: IPipelineStateStore,
+    private readonly webhooks?: HttpApiWebhooks
   ) {}
 
   start(): void {
@@ -34,6 +59,10 @@ export class HttpApiController {
       fetch: (req) => this.fetch(req),
     });
     console.log(`webhook listening on http://localhost:${this.server.port}/stream`);
+  }
+
+  get boundPort(): number {
+    return this.server?.port ?? this.port;
   }
 
   stop(): void {
@@ -138,6 +167,24 @@ export class HttpApiController {
       return this.handleModuleStatus(moduleStatus[1]);
     }
 
+    if (url.pathname === "/hooks" && req.method === "GET") {
+      return this.handleHooksList();
+    }
+
+    if (url.pathname === "/hooks" && req.method === "POST") {
+      return this.handleHooksCreate(req);
+    }
+
+    const hookDelete = /^\/hooks\/([^/]+)$/.exec(url.pathname);
+    if (hookDelete && hookDelete[1] && req.method === "DELETE") {
+      return this.handleHooksRemove(hookDelete[1]);
+    }
+
+    const hookIngest = /^\/hooks\/([^/]+)$/.exec(url.pathname);
+    if (hookIngest && hookIngest[1] && req.method === "POST") {
+      return this.handleHookIngest(hookIngest[1], req);
+    }
+
     return Response.json({ ok: false, error: "not found" }, { status: 404 });
   }
 
@@ -224,6 +271,165 @@ export class HttpApiController {
       return Response.json({ ok: false, error: `run ${runId} is not active`, state }, { status: 409 });
     }
     return Response.json({ ok: true, runId, stopped: true });
+  }
+
+  private async handleHooksList(): Promise<Response> {
+    if (!this.webhooks) {
+      return Response.json({ ok: false, error: "webhooks not configured" }, { status: 501 });
+    }
+    const bindings = await this.webhooks.store.list();
+    return Response.json({ ok: true, hooks: bindings });
+  }
+
+  private async handleHooksCreate(req: Request): Promise<Response> {
+    if (!this.webhooks) {
+      return Response.json({ ok: false, error: "webhooks not configured" }, { status: 501 });
+    }
+    try {
+      const body = (await req.json()) as {
+        source?: unknown;
+        provider?: unknown;
+        action?: unknown;
+        domain?: unknown;
+        secretEnv?: unknown;
+        enabled?: unknown;
+      };
+      const source = typeof body?.source === "string" ? body.source.trim() : "";
+      const provider = body?.provider;
+      if (!source) {
+        return Response.json({ ok: false, error: "hook требует source" }, { status: 400 });
+      }
+      if (provider !== "github" && provider !== "generic") {
+        return Response.json({ ok: false, error: 'provider должен быть "github" | "generic"' }, { status: 400 });
+      }
+      const action = body.action as ModuleAction | undefined;
+      if (action && !KNOWN_ACTIONS.includes(action)) {
+        return Response.json({ ok: false, error: `unknown action "${action}"` }, { status: 400 });
+      }
+      const domain = body.domain as ModuleDomain | undefined;
+      if (domain && !KNOWN_DOMAINS.includes(domain)) {
+        return Response.json({ ok: false, error: `unknown domain "${domain}"` }, { status: 400 });
+      }
+      const binding: IWebhookBinding = {
+        id: `hk_${randomHookId()}`,
+        source,
+        provider,
+        ...(action ? { action } : {}),
+        ...(domain ? { domain } : {}),
+        ...(typeof body.secretEnv === "string" && body.secretEnv ? { secretEnv: body.secretEnv } : {}),
+        enabled: body.enabled !== false,
+        createdAt: new Date().toISOString(),
+      };
+      await this.webhooks.store.save(binding);
+      this.hookNodes.delete(binding.id);
+      return Response.json({ ok: true, id: binding.id, url: `/hooks/${binding.id}` }, { status: 201 });
+    } catch (err) {
+      return Response.json({ ok: false, error: String(err) }, { status: 400 });
+    }
+  }
+
+  private async handleHooksRemove(id: string): Promise<Response> {
+    if (!this.webhooks) {
+      return Response.json({ ok: false, error: "webhooks not configured" }, { status: 501 });
+    }
+    const binding = await this.webhooks.store.load(id);
+    if (!binding) {
+      return Response.json({ ok: false, error: `no hook ${id}` }, { status: 404 });
+    }
+    await this.webhooks.store.remove(id);
+    this.hookNodes.delete(id);
+    return Response.json({ ok: true, removed: id });
+  }
+
+  /**
+   * Ingress вебхука: проверка секрета (HMAC по сырому телу), дедуп delivery,
+   * запуск workflow через entrypoint-ноду. Ничего не замалчиваем: каждая
+   * причина отказа публикуется в шину как entrypoint.ignored.
+   */
+  private async handleHookIngest(id: string, req: Request): Promise<Response> {
+    if (!this.webhooks) {
+      return Response.json({ ok: false, error: "webhooks not configured" }, { status: 501 });
+    }
+    const binding = await this.webhooks.store.load(id);
+    if (!binding) {
+      this.bus.publish({ type: "entrypoint.ignored", hookId: id, reason: "unknown_binding" });
+      return Response.json({ ok: false, error: `no hook ${id}` }, { status: 404 });
+    }
+    if (!binding.enabled) {
+      this.bus.publish({ type: "entrypoint.ignored", hookId: id, reason: "binding_disabled" });
+      return Response.json({ ok: false, error: "hook disabled" }, { status: 404 });
+    }
+
+    const raw = await req.text();
+    const signature = req.headers.get("x-hub-signature-256");
+    if (binding.secretEnv) {
+      const secret = process.env[binding.secretEnv];
+      if (!secret) {
+        this.bus.publish({
+          type: "entrypoint.ignored",
+          hookId: id,
+          reason: "misconfigured",
+          detail: `secretEnv "${binding.secretEnv}" не в env`,
+        });
+        return Response.json({ ok: false, error: "webhook misconfigured" }, { status: 500 });
+      }
+      if (!(await this.verifyHmac(raw, signature, secret))) {
+        this.bus.publish({ type: "entrypoint.ignored", hookId: id, reason: "bad_signature" });
+        return Response.json({ ok: false, error: "bad signature" }, { status: 401 });
+      }
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      return Response.json({ ok: false, error: "body не JSON" }, { status: 400 });
+    }
+
+    const eventHeaders = Object.fromEntries(req.headers.entries());
+    const bodyDelivery = (payload as { delivery_id?: unknown })?.delivery_id;
+    const deliveryId =
+      typeof bodyDelivery === "string"
+        ? bodyDelivery
+        : (eventHeaders["x-github-delivery"] as string | undefined);
+    if (deliveryId && this.seenDeliveries.has(deliveryId)) {
+      this.bus.publish({ type: "entrypoint.ignored", hookId: id, reason: "duplicate_delivery" });
+      return Response.json({ ok: true, received: false, duplicate: true });
+    }
+    if (deliveryId) {
+      this.seenDeliveries.add(deliveryId);
+      this.deliveryOrder.push(deliveryId);
+      while (this.deliveryOrder.length > DELIVERY_DEDUP_LIMIT) {
+        const evicted = this.deliveryOrder.shift();
+        if (evicted) this.seenDeliveries.delete(evicted);
+      }
+    }
+
+    const node = await this.entrypointFor(binding);
+    const result = await this.runner.trigger(node, { payload, headers: eventHeaders, deliveryId }, { maxVisits: 1000 });
+    return Response.json({ ok: true, received: true, started: result.started });
+  }
+
+  private async entrypointFor(binding: IWebhookBinding): Promise<WebhookEntrypointNode<IPipelineData>> {
+    const cached = this.hookNodes.get(binding.id);
+    if (cached) return cached;
+    const node = new WebhookEntrypointNode(
+      `hook:${binding.id}`,
+      binding,
+      this.webhooks?.providers ?? new Map(),
+      this.webhooks?.starter as IWorkflowStarter<IPipelineData>,
+      this.bus
+    );
+    this.hookNodes.set(binding.id, node);
+    return node;
+  }
+
+  private async verifyHmac(rawBody: string, signature: string | null, secret: string): Promise<boolean> {
+    if (!signature) return false;
+    const expected = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+    const a = Buffer.from(expected);
+    const b = Buffer.from(signature);
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 
   private async handleRun(agent?: string): Promise<Response> {

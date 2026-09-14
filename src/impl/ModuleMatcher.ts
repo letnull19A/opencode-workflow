@@ -1,10 +1,14 @@
 import type { IEventBus } from "../core/events.ts";
 import type { ModuleAction, ModuleDomain } from "../core/types.ts";
+import type { IWorkflowTask } from "../core/task.ts";
 import type { ModulePipeline } from "./ModulePipeline.ts";
 
 export interface ModuleMatcherConfig {
   match: (title: string) => boolean;
 }
+
+const KNOWN_ACTIONS: readonly ModuleAction[] = ["add", "update", "delete", "decompose"];
+const KNOWN_DOMAINS: readonly ModuleDomain[] = ["nestjs", "dotnet", "frontend", "general"];
 
 const ADD_KEYWORDS = /создать?|новый модуль|create|add|implement|разработ[ае]|module|feature/i;
 const UPDATE_KEYWORDS = /обнови|измени|попра[вв]|update|change|refactor|передела/i;
@@ -18,8 +22,9 @@ const DOMAIN_PATTERNS: Array<[ModuleDomain, RegExp]> = [
 
 /**
  * Матчер: подписан на task.received, по заголовку определяет стратегию
- * (ModuleAction) и домен, запускает ModulePipeline. Типы действий имеют
- * приоритет: decompose → delete → update → add.
+ * (ModuleAction) и домен, запускает ModulePipeline. meta.action/meta.domain
+ * (например от webhook-биндингов) имеют приоритет — типы действий по
+ * заголовку: decompose → delete → update → add.
  */
 export class ModuleMatcher {
   private readonly match: (title: string) => boolean;
@@ -34,10 +39,10 @@ export class ModuleMatcher {
     this.unsubscribe = bus.subscribe((event) => {
       if (event.type !== "task.received") return;
       const title = event.task.title;
-      if (!this.match(title)) return;
-      const action = detectAction(title);
+      if (!this.match(title) && !metaAction(event.task.meta)) return;
+      const action = resolveAction(event.task);
       void this.pipeline
-        .start(event.task, detectDomain(title), action)
+        .start(event.task, resolveDomain(event.task), action)
         .then((state) => {
           console.log(`[pipeline] ${state.runId} finished in ${state.phase}${state.error ? `: ${state.error}` : ""}`);
         })
@@ -65,4 +70,22 @@ export function detectDomain(title: string): ModuleDomain {
     if (pattern.test(title)) return domain;
   }
   return "general";
+}
+
+export function metaAction(meta?: Readonly<Record<string, unknown>>): ModuleAction | undefined {
+  const value = meta?.action;
+  return typeof value === "string" && KNOWN_ACTIONS.includes(value as ModuleAction) ? (value as ModuleAction) : undefined;
+}
+
+export function metaDomain(meta?: Readonly<Record<string, unknown>>): ModuleDomain | undefined {
+  const value = meta?.domain;
+  return typeof value === "string" && KNOWN_DOMAINS.includes(value as ModuleDomain) ? (value as ModuleDomain) : undefined;
+}
+
+export function resolveAction(task: IWorkflowTask): ModuleAction {
+  return metaAction(task.meta) ?? detectAction(task.title);
+}
+
+export function resolveDomain(task: IWorkflowTask): ModuleDomain {
+  return metaDomain(task.meta) ?? detectDomain(task.title);
 }
