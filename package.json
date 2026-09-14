@@ -7,6 +7,8 @@
 		"webhook": "bun src/http/main.ts",
 		"watch": "bun src/cli/watcher.ts",
 		"typecheck": "tsc --noEmit",
+		"test": "bun test",
+		"test:graph": "bun test src/impl/node.test.ts",
 		"docs:dev": "vitepress dev docs",
 		"docs:build": "vitepress build docs",
 		"docs:preview": "vitepress preview docs",
