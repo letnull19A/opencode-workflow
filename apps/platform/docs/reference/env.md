@@ -46,6 +46,42 @@ All configuration is injected through environment variables.
 | `PHASE_TIMEOUT_MS` | `1200000` (20 min) | Per-phase model budget; expiry fails the run |
 | `PHASE_SETTLE_MS` | `60000` | Silence window that completes a phase for providers missing step-finish events |
 
+## Workflows directory & hot-reload
+
+Custom compiled workflow artifacts live under `WORKFLOWS_DIR` (default
+`workflows` relative to the platform's working directory). Each artifact is a
+folder `<id>/{index.js, manifest.json}` produced by `bun run build-workflow`
+(see [Custom Workflows](/platform/workflows)). On start and after every
+`POST /internal/workflows/reload` the platform diffs the directory and emits
+`workflow.registered`, `workflow.updated`, `workflow.removed`, and
+`workflow.error` bus events (visible in the SSE stream and the web dashboard).
+
+The `watch-workflows` sidecar polls `WORKFLOWS_DIR`, detects directory-level
+changes, and hits the internal reload endpoint with the appropriate token.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WORKFLOWS_DIR` | `workflows` | Directory containing compiled workflow artifacts |
+| `WATCHER_POLL_MS` | `2000` | watch-workflows poll interval |
+| `RELOAD_TOKEN` | (empty) | When set, the internal `/internal/workflows/reload` endpoint requires the `x-reload-token` header with this value; loopback is denied when set |
+
+```bash
+# example: start the sidecar in production alongside the webhook
+WORKFLOWS_DIR=/app/workflows PORT=8787 RELOAD_TOKEN=$(openssl rand -hex 16) bun run watch-workflows
+```
+
+Gate rules applied at load:
+
+- `manifest.json` must be valid JSON with `format`, `id`, `label`, and
+  `sdkVersion`.
+- `format` must equal the current `workflowFormat` constant (`1`).
+- `sdkVersion` must match the SDK version the platform was compiled against.
+  After upgrading the SDK or platform, rebuild artifacts via
+  `bun run build-workflow`.
+- The artifact directory name must match the `id` in the manifest.
+- Missing or misconfigured artifacts are skipped and published as
+  `workflow.error` (they never crash the platform).
+
 ## Delivery
 
 The delivery step is opt-in and runs in the current working directory

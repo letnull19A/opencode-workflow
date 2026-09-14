@@ -1,10 +1,13 @@
 **/node_modules/
 **/.git
 **/.gitmodules
-.gitignore
 .env
 **/*.log
 nohup.out
 Dockerfile
 .dockerignore
-docs/.vitepress/
+apps/platform/workflows/
+apps/platform/docs/.vitepress/
+apps/web/dist/
+apps/platform/src/impl/ModuleWorkflowStarter.ts
+apps/platform/src/impl/WebhookEntrypointNode.ts

@@ -1,102 +1,114 @@
 # opencode-workflow
 
-Demo of working with opencode through `@opencode-ai/sdk` on Bun: send a prompt, wait for the answer, exit. Custom agents come from `.opencode/` (a submodule).
+Платформа-оркестратор модульной разработки на Bun + TypeScript 7, работающая
+через `@opencode-ai/sdk`. Пак `.opencode/` (субмодуль) — портируемые «мозги»
+(агенты/скиллы); этот репозиторий — TS7-платформа (интерфейсы, классы, webhook,
+источники задач) и **pnpm-монорепо**.
 
-## Files
+## Структура
 
-- `src/impl/OpencodeAgentExecutor.ts` — connection to opencode (attach or self-start), auto-approval of permissions, run of the `"Test"` prompt (or per-phase agent).
-- `src/impl/ModulePipeline.ts` — module-building state machine with action strategies (`ACTION_PHASES`): `add` → `spec → planning → tests → implementation → verification`; `update` → `tests → implementation → verification`; `delete` → `implementation → verification`; `decompose` → `spec → planning` (no code). On verification FAIL → back to `tests` (`update`) / `implementation` (`delete`), retry budget (`PIPELINE_MAX_RETRIES`), on exhaustion → `failed`; persists state via `IPipelineStateStore`. Each phase runs through the worker's proxy agent.
-- `src/impl/ModuleMatcher.ts` — subscribes to `task.received`, detects the strategy keyword (`add`/`update`/`delete`/`decompose`, priority decompose → delete → update → add), domain (`nestjs`/`dotnet`/`frontend`/`general`) and starts the pipeline.
-- `src/core/worker.ts` + `src/impl/BaseModuleWorker.ts` — `IModuleWorker` contract and base class; domain workers: `NestJSModuleWorker` (jest), `DotNetModuleWorker` (dotnet test), `GeneralModuleWorker` (fallback). Re-exported from `src/workers/index.ts`. Phases are proxied to pack agents via `agentFor`: `tests` → `unit-test`, `update`/`delete`/`decompose` implementation → `refactor`.
-- `src/impl/ConfigWorkerRegistry.ts` — `IWorkerRegistry`: domain+action → `IModuleWorker[]` (exact domain wins, `general` is the fallback).
-- `src/impl/TaskWatcher.ts` — poll bridge: new tasks from a source → `task.received` event → ack; processed state in `<STATE_DIR>/processed.json`.
-- `src/impl/TrelloTaskSource.ts` / `src/impl/FileTaskSource.ts` — `ITaskSource` implementations (Trello REST / local JSON).
-- `src/cli/index.ts` — CLI: `bun run start [agent]`.
-- `src/cli/watcher.ts` — watcher entry: `bun run watch` (polls `TASK_SOURCE`: `trello` or `file`).
-- `src/http/HttpApiController.ts` — HTTP: `GET /health`, `GET /agents`, `GET/POST /run(?agent=|{"agent":...})`, `POST /task` (ingest → `task.received`).
-- `src/core/` — contracts only (`I*` interfaces and type unions), no logic.
-- `.opencode/` — submodule `letnull19A/.opencode` with agents, commands and skills.
+| Пакет | Что внутри |
+|---|---|
+| `packages/sdk/` | `@opencode-workflow/sdk` — протоколы, `IWorkflowDefinition`, DSL-граф (`node`/`graph`/`session`), `workflowFormat`/`sdkVersion` |
+| `apps/platform/` | Платформа: `src/core/` (только `I*`-интерфейсы, без логики), `src/impl/` (реализации), `src/engine/` (граф-движок), `src/http/` (webhook), `src/cli/`, `docs/`, `workflows-src/`, `workflows/` |
+| `apps/web/` | React-дашборд (Vite + shadcn): SSE `/stream` → граф пайплайна, хуки, запуск workflow, ось времён |
+
+## Ключевые входы
+
+- `src/impl/ModulePipeline.ts` — state machine модульной разработки: `add` →
+  `spec → planning → tests → implementation → verification`; `update` → `tests →
+  implementation → verification`; `delete` → `implementation → verification`;
+  `decompose` → `spec → planning`. Retry-бюджет `PIPELINE_MAX_RETRIES`, отмена через
+  `stop()`. Состояние — в `IPipelineStateStore`, события — в шину.
+- `src/impl/ModuleMatcher.ts` — `task.received` → детекция `action`/`domain` →
+  запуск pipeline (module-workflow).
+- `src/core/workflows.ts` + `src/impl/WorkflowRegistry.ts` — реестр workflow
+  (`module` + кастомные). `WorkflowDirLoader` грузит собранные артефакты из
+  `WORKFLOWS_DIR`; `GraphWorkflow` исполняет их `IWorkflowDefinition` на
+  `src/engine/` (NodeGraphBuilder + DepthFirstNodeRunner).
+
+## Кастомные workflow
+
+- `apps/platform/workflows-src/` — TS-исходники (`export default defineWorkflow(...)`).
+- `apps/platform/workflows/` — **собранные** артефакты `<id>/{index.js, manifest.json}` (gitignored).
+- Типы проверяются на сборке (`build-workflow`), в рантайме — только гейт
+  контракта `format` + `sdkVersion` из `manifest.json` (несоответствие →
+  `workflow.error`, платформа не падает).
+- Hot-reload: `watch-workflows` (sidecar) поллит каталог → `POST /internal/workflows/reload` →
+  `workflow.registered/updated/removed/error` → SSE/дашборд.
+
+```bash
+cd apps/platform
+bun run build-workflow                 # workflows-src/*.ts → workflows/<id>/
+bun run webhook & bun run watch-workflows &
+curl -X POST http://127.0.0.1:8787/workflow/release-bump \
+  -H 'content-type: application/json' -d '{"title":"Release 1.1.0"}'
+```
+
+Полный гайд: `apps/platform/docs/platform/workflows.md`, SDK-контракт —
+`packages/sdk/src/workflow/definition.ts`, DSL — `packages/sdk/src/dsl/graph.ts`.
+
+## HTTP API (webhook, :8787)
+
+| Method | Path | Описание |
+|---|---|---|
+| `GET` | `/workflows` | список зарегистрированных workflow |
+| `POST` | `/workflow/:id` | запуск workflow (`{title, meta?}` → `202 {runId}`) |
+| `GET` | `/workflow/:id/:runId` | состояние рана |
+| `POST` | `/workflow/:id/:runId/stop` | остановка → `cancelled` |
+| `POST` | `/internal/workflows/reload` | реиндекс `WORKFLOWS_DIR` (loopback/token) |
+| `GET/POST` | `/hooks`, `/hooks/:id` | вебхук-биндинги и ingress → workflow |
+| `GET` | `/stream` | SSE `snapshot` + живые события |
+
+OpenAPI: `apps/platform/docs/public/openapi.yaml`.
 
 ## Setup
 
 ```bash
 git clone --recurse-submodules git@github.com:letnull19A/opencode-workflow.git
 cd opencode-workflow
-pnpm install
+pnpm install        # corepack pnpm — фиксировано в packageManager + pnpm-lock.yaml
+pnpm run typecheck  # pnpm -r typecheck
+pnpm run test
 ```
-
-For an existing clone: `git submodule update --init`.
 
 ## Run
 
 ```bash
-bun run start refactor       # single run with the refactor agent (default is build)
-bun run start module "Пользователи"   # module pipeline by name (add/update/… auto-detected)
-bun run start module "Пользователи" --domain nestjs --action add   # or explicit
-bun run webhook              # webhook on :8787
-PORT=9000 bun run webhook
-bun run watch                # poll task source (TASK_SOURCE=file|trello) → events → ack
-bun run typecheck            # tsc --noEmit (TypeScript 7, typecheck-only)
+pnpm run webhook             # платформа на :8787
+pnpm run watch               # поллинг задач (TASK_SOURCE=file|trello)
+pnpm run watch-workflows     # hot-reload каталога workflows
+pnpm run start refactor      # one-off агентский прогон
+pnpm run web:dev             # дашборд (vite, прокси /workflow*, /stream)
 ```
-
-Module runs (CLI and HTTP) go through the same strategies as the task watcher
-(see below): `add` → `spec → planning → tests → implementation → verification`,
-`update` → `tests → implementation → verification`, `delete` →
-`implementation → verification`, `decompose` → `spec → planning`.
-
-HTTP endpoints: `POST /module` starts a run from a module title
-(`{ title, domain?, action? }` → `202 { runId, domain, action }`),
-`GET /module/:runId` returns the persisted pipeline state (`done`/`failed`/phase).
 
 ## Env
 
 | Variable | Purpose |
 |---|---|
-| `OPENCODE_SERVER_URL` | attach to a running server (e.g. `http://127.0.0.1:4096`); if empty or unreachable, a new server is started |
-| `OPENCODE_DIRECTORY` | project for attach mode (optional) |
-| `OPENCODE_SERVER_PASSWORD` | password for a protected server (HTTP Basic Auth) |
-| `OPENCODE_SERVER_USERNAME` | auth username (default `opencode`) |
-| `PORT` | webhook port (default `8787`) |
-| `TASK_SOURCE` | task source for `bun run watch` (`file` default, `trello`) |
-| `TASK_SOURCE_FILE` | JSON file of tasks for `file` source (default `tasks.json`) |
-| `TASK_POLL_INTERVAL_MS` | watcher poll interval (default `30000`) |
-| `STATE_DIR` | state directory (default `~/.local/state/opencode-workflow`) |
-| `TRELLO_API_KEY`, `TRELLO_TOKEN` | Trello credentials (required for `TASK_SOURCE=trello`) |
-| `TRELLO_BOARD` | Trello board name (default: first open board) |
-| `TRELLO_INBOX_LIST` | inbox list to fetch tasks from (default `Inbox`) |
-| `TRELLO_DONE_LIST` | list for ack (move card, default `Done`) |
-| `PIPELINE_MAX_RETRIES` | verification-retry budget for the module pipeline (default `3`) |
-| `PHASE_TIMEOUT_MS` | per-phase model budget (default `1200000` = 20 min; timeout → run fails) |
-| `PHASE_SETTLE_MS` | silence window that ends a phase for providers missing step-finish events (default `60000`) |
+| `OPENCODE_SERVER_URL` | attach к запущенному серверу; пусто → self-start |
+| `OPENCODE_DIRECTORY` | каталог проекта в attach-режиме |
+| `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` | Basic Auth сервера |
+| `PORT` | порт webhook (default `8787`) |
+| `WORKFLOWS_DIR` | каталог собранных workflow (default `workflows`) |
+| `WATCHER_POLL_MS` | интервал поллинга watch-workflows (default `2000`) |
+| `RELOAD_TOKEN` | токен для `/internal/workflows/reload` (прод-режим) |
+| `TASK_SOURCE` / `TASK_SOURCE_FILE` / `TASK_POLL_INTERVAL_MS` | источник задач |
+| `STATE_DIR` | стейт (default `~/.local/state/opencode-workflow`) |
+| `TRELLO_API_KEY`, `TRELLO_TOKEN`, `TRELLO_BOARD`, `TRELLO_INBOX_LIST`, `TRELLO_DONE_LIST` | Trello-источник |
+| `PIPELINE_MAX_RETRIES` / `PHASE_TIMEOUT_MS` / `PHASE_SETTLE_MS` | бюджет и таймауты module-pipeline |
+| `DELIVERY_ENABLED` / `DELIVERY_PUSH` / `PROJECT_DIR` | опциональный delivery (commit/push) |
+| `EVENT_HISTORY_LIMIT` / `DELIVERY_DEDUP_LIMIT` | окна history и дедупа |
 
-In attach mode the running server's config and model are used, not the local ones (`permission: allow` and `reasoningEffort: minimal` apply only to a self-started server).
+## Docker
 
-## Container (Docker)
-
-The image bundles `bun`, the `opencode` CLI (self-started server) and the `.opencode/` pack. Default command is the webhook on `:8787`.
+Полное описание — `apps/platform/docs/reference/docker.md`. Образ на `oven/bun:1`,
+зависимости ставятся pnpm (`--filter @opencode-workflow/platform... --prod`),
+`WORKFLOWS_DIR` монтируется как volume:
 
 ```bash
 docker build -t opencode-workflow .
-docker run -p 8787:8787 -d opencode-workflow
-curl http://127.0.0.1:8787/health
-curl http://127.0.0.1:8787/agents        # pack agents (build, unit-test, refactor, …)
+docker run -p 8787:8787 -d -v /host/workflows:/app/workflows opencode-workflow
 ```
 
-`bun.lock` is committed for reproducible installs (`--frozen-lockfile`). Secrets (Trello, opencode server auth) are passed only via env: `docker run -e TRELLO_API_KEY=… -e TRELLO_TOKEN=…`.
-
-## E2E (NestJS sandbox)
-
-A smoke E2E runs the pipeline against a real opencode server from an isolated sandbox dir:
-
-```bash
-mkdir -p /tmp/nest-sandbox/src && cd /tmp/nest-sandbox && npm init -y
-# add a sample task and run the pipeline (view phase events on stdout)
-bun --offline scripts/e2e/module-pipeline.ts   # or inline with a real executor
-```
-
-Expected flow: `spec → planning → tests → implementation → verification → done` (or `failed` if the suite never passes), intermediates persisted in the pipeline state store. See `src/impl/ModulePipeline.ts` for phase semantics.
-
-Live runs were verified to `done` on both `add` (full 5-phase cycle) and `decompose`
-(2-phase, `spec → planning`). Phase completion is detected by polling the session
-(messages with `completed` flag, or stable output after `PHASE_SETTLE_MS`), so runs
-finish even for providers that never emit a dedicated step-finish event.
+Секреты — только env, в образ ничего секретного не зашивается.

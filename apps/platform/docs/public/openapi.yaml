@@ -143,43 +143,78 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /module:
+  /workflows:
+    get:
+      tags: [Workflows]
+      summary: List registered workflows (module + custom from WORKFLOWS_DIR)
+      operationId: listWorkflows
+      responses:
+        "200":
+          description: Workflow summaries (id/label/phases) for dashboards and hook forms
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, workflows]
+                properties:
+                  ok:
+                    type: boolean
+                  workflows:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowSummary"
+
+  /workflow/{workflowId}:
     post:
-      tags: [Modules]
-      summary: Start a module pipeline run by title (matcher bypassed)
-      operationId: startModule
+      tags: [Workflows]
+      summary: Start a workflow run by id (module or custom-compiled)
+      operationId: startWorkflow
+      parameters:
+        - name: workflowId
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [module, release-bump]
+            example: release-bump
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ModuleRequest"
+              $ref: "#/components/schemas/WorkflowRequest"
       responses:
         "202":
           description: Run started asynchronously
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ModuleStartResponse"
+                $ref: "#/components/schemas/WorkflowStartResponse"
         "400":
-          description: Missing title, unknown domain/action or invalid JSON
+          description: Missing title or invalid JSON
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "501":
-          description: Pipeline not wired into this instance
+        "404":
+          description: Unknown workflow id
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /module/{runId}:
+  /workflow/{workflowId}/{runId}:
     get:
-      tags: [Modules]
-      summary: Persisted pipeline state for a run
-      operationId: moduleStatus
+      tags: [Workflows]
+      summary: Persisted run state
+      operationId: workflowStatus
       parameters:
+        - name: workflowId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: module
         - name: runId
           in: path
           required: true
@@ -188,7 +223,7 @@ paths:
             example: run-cli-user-profile
       responses:
         "200":
-          description: Current pipeline state
+          description: Current run state
           content:
             application/json:
               schema:
@@ -200,7 +235,7 @@ paths:
                   state:
                     $ref: "#/components/schemas/PipelineState"
         "404":
-          description: No such run (not started yet or unknown id)
+          description: No such run
           content:
             application/json:
               schema:
@@ -212,12 +247,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /module/{runId}/stop:
+  /workflow/{workflowId}/{runId}/stop:
     post:
-      tags: [Modules]
-      summary: Stop an active pipeline run (transitions to cancelled)
-      operationId: stopModule
+      tags: [Workflows]
+      summary: Stop an active run (transitions to cancelled)
+      operationId: stopWorkflow
       parameters:
+        - name: workflowId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: module
         - name: runId
           in: path
           required: true
@@ -226,13 +267,13 @@ paths:
             example: run-cli-user-profile
       responses:
         "200":
-          description: Stop signal delivered; the cancelled final arrives as pipeline.cancelled
+          description: Stop signal delivered; the final arrives as pipeline.cancelled
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ModuleStopResponse"
+                $ref: "#/components/schemas/WorkflowStopResponse"
         "404":
-          description: No such run
+          description: No such run or workflow
           content:
             application/json:
               schema:
@@ -244,7 +285,43 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "501":
-          description: Pipeline or store not wired
+          description: Store not wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /internal/workflows/reload:
+    post:
+      tags: [Internal]
+      summary: Re-scan WORKFLOWS_DIR and diff the registry (workflow.* events)
+      description: |
+        Called by the watch-workflows sidecar process on any change under
+        WORKFLOWS_DIR. Loopback-only unless RELOAD_TOKEN is set, in which case
+        the header x-reload-token is required.
+      operationId: reloadWorkflows
+      responses:
+        "200":
+          description: Registry re-scanned; diffs announced via workflow.* bus events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, reindexed]
+                properties:
+                  ok:
+                    type: boolean
+                  reindexed:
+                    type: boolean
+                    const: true
+        "401":
+          description: Not loopback and no matching RELOAD_TOKEN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Workflow dir not configured
           content:
             application/json:
               schema:
@@ -426,7 +503,8 @@ paths:
         a `snapshot` event carrying the recent event history, then pushes live
         events (`task.received`, `pipeline.started`, `pipeline.phase`,
         `pipeline.done`, `pipeline.failed`, `pipeline.cancelled`,
-        `pipeline.delivered`, `pipeline.delivery_failed`,
+        `pipeline.delivered`, `pipeline.delivery_failed`, `workflow.registered`,
+        `workflow.updated`, `workflow.removed`, `workflow.error`,
         `entrypoint.ignored`) as they are published to the bus. Event source
         buffers up to `EVENT_HISTORY_LIMIT` events (default 200).
       responses:
@@ -537,32 +615,51 @@ components:
           description: Final assistant text (may be empty).
         durationMs:
           type: integer
-    ModuleRequest:
+    WorkflowSummary:
+      type: object
+      description: Public face of a registered workflow (built-in module + custom artifacts).
+      required: [id, label]
+      properties:
+        id:
+          type: string
+          description: Registry key; /workflow/:id routes on it.
+          example: release-bump
+        label:
+          type: string
+          example: Release bump
+        phases:
+          type: array
+          description: Explicit phase names (ads to the dashboard); optional.
+          items:
+            type: string
+    WorkflowRequest:
       type: object
       required: [title]
       properties:
         title:
           type: string
-          description: Module title/description; drives domain and action detection.
-        domain:
-          $ref: "#/components/schemas/ModuleDomain"
-        action:
-          $ref: "#/components/schemas/ModuleAction"
-    ModuleStartResponse:
+          description: Run title; slugified to externalId (source cli).
+        meta:
+          type: object
+          additionalProperties: true
+          description: Passed to the workflow (module uses meta.action/meta.domain; custom workflows read their own fields).
+    WorkflowStartResponse:
       type: object
-      required: [ok, runId, domain, action]
+      required: [ok, workflow, runId]
       properties:
         ok:
           type: boolean
+        workflow:
+          type: string
+          example: release-bump
         runId:
           type: string
-          description: run-<source>-<externalId>; source is cli for /module.
-          example: run-cli-user-profile
-        domain:
-          $ref: "#/components/schemas/ModuleDomain"
-        action:
-          $ref: "#/components/schemas/ModuleAction"
-    ModuleStopResponse:
+          description: run-<source>-<externalId>; source is cli for /workflow/:id.
+          example: run-cli-release-1-1-0
+        received:
+          type: boolean
+          description: False when the workflow rejected the task (fire-and-forget paths).
+    WorkflowStopResponse:
       type: object
       description: Acknowledgement of a stop request.
       required: [ok, runId, stopped]
@@ -595,6 +692,10 @@ components:
           $ref: "#/components/schemas/ModuleAction"
         domain:
           $ref: "#/components/schemas/ModuleDomain"
+        workflow:
+          type: string
+          description: Workflow to start on ingest; defaults to module when absent.
+          example: release-bump
         secretEnv:
           type: string
           description: Env variable holding the HMAC secret; verified at ingress.
@@ -613,6 +714,9 @@ components:
         provider:
           type: string
           enum: [github, generic]
+        workflow:
+          type: string
+          description: Workflow id to start; module mark.
         action:
           $ref: "#/components/schemas/ModuleAction"
         domain:
@@ -624,13 +728,16 @@ components:
           default: true
     PipelineState:
       type: object
-      description: Persisted snapshot of a pipeline run.
-      required: [runId, phase, externalId, source, attempts, action]
+      description: Persisted snapshot of a run.
+      required: [runId, phase, externalId, source, attempts]
       properties:
         runId:
           type: string
         phase:
           $ref: "#/components/schemas/PipelinePhase"
+        workflow:
+          type: string
+          description: Owning workflow id (module for the built-in pipeline).
         externalId:
           type: string
         source:
@@ -640,6 +747,8 @@ components:
           description: Verification retries already used.
         action:
           $ref: "#/components/schemas/ModuleAction"
+        domain:
+          $ref: "#/components/schemas/ModuleDomain"
         error:
           type: string
           description: Present on failed runs.

@@ -15,12 +15,14 @@ For the formal wire schemas (types, field tables, machine-readable spec) see
 | `GET` | `/agents` | List agents known to the server |
 | `GET` / `POST` | `/run` | One-off agent run (single *Test* prompt) |
 | `POST` | `/task` | Ingest a task → publishes `task.received` |
-| `POST` | `/module` | Start a module pipeline by title → `202` with `runId` |
-| `GET` | `/module/:runId` | Persisted pipeline state for a run |
-| `POST` | `/module/:runId/stop` | Stop an active run → `cancelled` via `pipeline.cancelled` |
+| `GET` | `/workflows` | List registered workflows (built-in + custom) |
+| `POST` | `/workflow/:workflowId` | Start a workflow run by id → `202` with `runId` |
+| `GET` | `/workflow/:workflowId/:runId` | Persisted state for a run |
+| `POST` | `/workflow/:workflowId/:runId/stop` | Stop an active run → `cancelled` via `pipeline.cancelled` |
+| `POST` | `/internal/workflows/reload` | Re-scan `WORKFLOWS_DIR` → `workflow.*` events (internal, loopback/token) |
 | `GET` | `/hooks` | List webhook bindings |
 | `POST` | `/hooks` | Create a webhook binding → `201` with ingress `url` |
-| `POST` | `/hooks/:hookId` | Webhook ingress → entrypoint node → pipeline run |
+| `POST` | `/hooks/:hookId` | Webhook ingress → workflow run (binding.workflow \|\| module) |
 | `DELETE` | `/hooks/:hookId` | Remove a webhook binding |
 | `GET` | `/stream` | SSE stream of platform events (`snapshot` + live) |
 
@@ -62,47 +64,77 @@ curl -X POST http://127.0.0.1:8787/task \
 # { "ok": true, "received": "t-42" }
 ```
 
-## POST /module
+## GET /workflows
 
-Starts a module pipeline run from a module *title* without going through the
-**matcher**:
+Lists the registered workflows — the built-in `module` plus every compiled
+artifact currently loaded from `WORKFLOWS_DIR`:
 
 ```bash
-curl -X POST http://127.0.0.1:8787/module \
-  -H 'content-type: application/json' \
-  -d '{"title":"User Profile","domain":"nestjs","action":"add"}'
-# 202 { "ok": true, "runId": "run-cli-user-profile", "domain": "nestjs", "action": "add" }
+curl http://127.0.0.1:8787/workflows
+# { "ok": true, "workflows": [ { "id": "module", "label": "Module pipeline", "phases": ["spec","planning","tests","implementation","verification"] }, { "id": "release-bump", "label": "Release bump", "phases": ["analyze","bump","verify"] } ] }
 ```
 
-- `title` is required; `domain` and `action` are optional and are otherwise
-  auto-detected (`detectDomain`/`detectAction`).
-- Unknown `domain`/`action` values → `400` with the allowed lists.
-- The run is **async** — the endpoint returns `202` immediately; track it via
-  `GET /module/:runId`.
+Custom workflows are added/removed live as `WORKFLOWS_DIR` changes (see
+[Custom Workflows](/platform/workflows)).
 
-## GET /module/:runId
+## POST /workflow/:workflowId
 
-Returns the persisted pipeline state for a run:
+Starts a workflow run by id without going through the matcher. `module` runs the
+built-in module pipeline; any other id must be a loaded custom workflow:
 
 ```bash
-curl http://127.0.0.1:8787/module/run-cli-user-profile
-# { "ok": true, "state": { "runId": "…", "phase": "done", "attempts": 0, "action": "add", … } }
+curl -X POST http://127.0.0.1:8787/workflow/module \
+  -H 'content-type: application/json' \
+  -d '{"title":"User Profile","meta":{"domain":"nestjs","action":"add"}}'
+# 202 { "ok": true, "workflow": "module", "runId": "run-cli-user-profile" }
+
+curl -X POST http://127.0.0.1:8787/workflow/release-bump \
+  -H 'content-type: application/json' \
+  -d '{"title":"Release 1.1.0"}'
+# 202 { "ok": true, "workflow": "release-bump", "runId": "run-cli-release-1-1-0" }
+```
+
+- `title` is required; it is slugified into `externalId` (`source: cli`).
+- `meta` is passed to the workflow: the module workflow reads
+  `meta.domain`/`meta.action`, custom workflows consume their own fields.
+- Unknown workflow id → `404`.
+- The run is **async** — `202` with `runId`; track it via
+  `GET /workflow/:id/:runId`.
+
+## GET /workflow/:workflowId/:runId
+
+Returns the persisted state for a run:
+
+```bash
+curl http://127.0.0.1:8787/workflow/module/run-cli-user-profile
+# { "ok": true, "state": { "runId": "…", "phase": "done", "workflow": "module", "attempts": 0, … } }
 ```
 
 `404` if no run with that id exists yet.
 
-## POST /module/:runId/stop
+## POST /workflow/:workflowId/:runId/stop
 
-Stops an active pipeline run. The stop is acknowledged synchronously; the run
-finalises to `cancelled` and announces `pipeline.cancelled` on the bus:
+Stops an active run. The stop is acknowledged synchronously; the run finalises
+to `cancelled` and announces `pipeline.cancelled` on the bus:
 
 ```bash
-curl -X POST http://127.0.0.1:8787/module/run-cli-user-profile/stop
+curl -X POST http://127.0.0.1:8787/workflow/module/run-cli-user-profile/stop
 # { "ok": true, "runId": "run-cli-user-profile", "stopped": true }
 ```
 
-`404` if no run with that id exists; `409` (with the current `state`) if the
-run is known but not active — already `done`, `failed` or `cancelled`.
+`404` if no such run/workflow; `409` (with the current `state`) if the run is
+known but not active — already `done`, `failed` or `cancelled`.
+
+## POST /internal/workflows/reload
+
+Used by the `watch-workflows` sidecar: re-index `WORKFLOWS_DIR` and announce
+`workflow.registered`/`updated`/`removed`/`error` on the bus. Loopback-only
+unless `RELOAD_TOKEN` is set (then the `x-reload-token` header is required):
+
+```bash
+curl -X POST -H 'x-reload-token: <token>' http://127.0.0.1:8787/internal/workflows/reload
+# { "ok": true, "reindexed": true }
+```
 
 ## GET /hooks
 
@@ -121,22 +153,22 @@ Creates a webhook binding (persisted under `STATE_DIR/hooks/`):
 ```bash
 curl -X POST http://127.0.0.1:8787/hooks \
   -H 'content-type: application/json' \
-  -d '{"source":"github-ci","provider":"github","action":"add","secretEnv":"GITHUB_WEBHOOK_SECRET"}'
+  -d '{"source":"github-ci","provider":"github","workflow":"release-bump","secretEnv":"GITHUB_WEBHOOK_SECRET"}'
 # 201 { "ok": true, "id": "hk_mre3xo6q", "url": "/hooks/hk_mre3xo6q" }
 ```
 
 - `source` (required) and `provider` (`github` | `generic`) are mandatory;
-  `action`/`domain` pin the module strategy (else detected from the payload);
-  `secretEnv` names the env variable with the HMAC secret; `enabled` defaults
-  to `true`.
+  `workflow` pins the target workflow (default `module`); `action`/`domain` pin
+  the module strategy (else detected from the payload); `secretEnv` names the
+  env variable with the HMAC secret; `enabled` defaults to `true`.
 
 ## POST /hooks/:hookId
 
 Webhook ingress. The raw body is HMAC-SHA256-verified (header
 `x-hub-signature-256`) when the binding pins a `secretEnv`, delivery ids are
 de-duplicated (`x-github-delivery` / `delivery_id`, bounded by
-`DELIVERY_DEDUP_LIMIT`), then a module run is started through the webhook
-entrypoint node:
+`DELIVERY_DEDUP_LIMIT`), then a workflow run is started on the binding's
+workflow (or `module`):
 
 ```bash
 curl -X POST http://127.0.0.1:8787/hooks/hk_mre3xo6q \

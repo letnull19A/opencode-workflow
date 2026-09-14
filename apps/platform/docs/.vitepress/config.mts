@@ -24,6 +24,7 @@ export default defineConfig({
         { text: "Platform", items: [
           { text: "Architecture", link: "/platform/architecture" },
           { text: "Module Pipeline", link: "/platform/pipeline" },
+          { text: "Custom Workflows", link: "/platform/workflows" },
           { text: "Workers", link: "/platform/workers" },
           { text: "Agent Executor", link: "/platform/executor" },
           { text: "Task Sources & Events", link: "/platform/tasks" },

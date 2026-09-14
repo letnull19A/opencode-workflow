@@ -42,6 +42,22 @@ Run the pipeline against a different project by changing the working directory
 (an opencode server is started there), or point to an existing server with
 `OPENCODE_SERVER_URL`.
 
+## Build workflow artifacts
+
+Compiles `workflows-src/*.ts` (or explicit files) into self-contained artifacts
+under `WORKFLOWS_DIR` (default `workflows`). For each source it runs
+`tsc --noEmit` (scoped to `workflows-src/tsconfig.json`), then bundles with
+`Bun.build` — the SDK is inlined, and a `manifest.json` is written for the
+platform's load-time gate.
+
+```bash
+bun run build-workflow                          # compile all workflows-src/*.ts
+bun run build-workflow workflows-src/feat-x.ts  # compile a single file
+WORKFLOWS_DIR=dist/workflows bun run build-workflow
+```
+
+Output: `<WORKFLOWS_DIR>/<id>/index.js` + `manifest.json`.
+
 ## Task watcher
 
 ```bash
@@ -50,6 +66,18 @@ bun run watch
 
 Polls a task source (`TASK_SOURCE=file|trello`) and feeds tasks to the pipeline
 through the matcher. See [Task Sources & Events](/platform/tasks).
+
+## Workflow watcher sidecar
+
+```bash
+bun run watch-workflows
+```
+
+Polls `WORKFLOWS_DIR` and, on any change, hits
+`POST /internal/workflows/reload` so the running platform re-indexes the
+registry and emits `workflow.*` events. The sidecar keeps retrying when the
+platform is down (no crash loop). Authenticate with `RELOAD_TOKEN` in
+production.
 
 ## Webhook
 
