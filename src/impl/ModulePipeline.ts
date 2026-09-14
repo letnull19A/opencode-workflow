@@ -1,11 +1,16 @@
 import type { IAgentExecutor } from "../core/executor.ts";
 import type { IEventBus } from "../core/events.ts";
+import type { INode, INodeContext, INodeExecutor } from "../core/node.ts";
+import type { IPipelineData } from "../core/pipeline-data.ts";
 import type { IPipelineState, IPipelineStateStore } from "../core/pipeline.ts";
 import type { IWorkerRegistry } from "../core/registry.ts";
 import type { IWorkflowTask } from "../core/task.ts";
 import type { ModuleAction, ModuleDomain, PipelinePhase } from "../core/types.ts";
 import type { IModuleWorker } from "../core/worker.ts";
 import { GeneralModuleWorker } from "./GeneralModuleWorker.ts";
+import { MapNodeContext } from "./MapNodeContext.ts";
+import { NodeGraphBuilder } from "./NodeGraphBuilder.ts";
+import { DepthFirstNodeRunner } from "./DepthFirstNodeRunner.ts";
 
 export interface ModulePipelineConfig {
   maxAttempts?: number;
@@ -30,16 +35,19 @@ const BACK_TO: Readonly<Partial<Record<ModuleAction, PipelinePhase>>> = {
 };
 
 /**
- * Машина состояний разработки модуля. Стартует из задачи: определяет воркер
- * по домену и действию, гонит фазы с возвратом к тестам (add/update) или
- * реализации (delete) на провале verification; исчерпание бюджета → failed.
- * Активные раны трекаются в running и останавливаются через stop() — ран
- * переходит в cancelled, ожидание сессии в исполнителе абортится.
+ * Машина состояний разработки модуля на графе нод. Каждая фаза — нода,
+ * verification ветвится гардами на retry/fail/done (совпадает с линейной
+ * семантикой: возврат к BACK_TO с бюджетом попыток). Фазы публикуют
+ * pipeline.phase, терминальные — pipeline.done/failed/cancelled; состояние
+ * пишется в store. Активные раны трекаются в running и останавливаются
+ * через stop() — ожидание сессии в исполнителе абортится сигналом.
  */
 export class ModulePipeline {
   private readonly maxAttempts: number;
   private readonly fallback: IModuleWorker = new GeneralModuleWorker();
   private readonly running = new Map<string, AbortController>();
+  private readonly graphs = new Map<string, INode<IPipelineData>>();
+  private readonly runner = new DepthFirstNodeRunner();
 
   constructor(
     private readonly executor: IAgentExecutor,
@@ -58,10 +66,26 @@ export class ModulePipeline {
     action: ModuleAction
   ): Promise<IPipelineState> {
     const runId = `run-${task.source}-${task.externalId}`;
+    this.bus.publish({ type: "pipeline.started", runId, task, action, domain });
     const stopper = new AbortController();
     this.running.set(runId, stopper);
     try {
-      return await this.run(task, domain, action, runId, stopper.signal);
+      const worker = this.pickWorker(domain, action);
+      const entry = this.graphFor(action, worker);
+      const ctx = new MapNodeContext<IPipelineData>(runId, stopper.signal, {
+        task,
+        action,
+        domain,
+        phase: ACTION_PHASES[action][0] ?? "spec",
+        attempts: 0,
+      });
+      try {
+        await this.runner.run(entry, ctx);
+      } catch (err) {
+        if (stopper.signal.aborted) return this.cancel(ctx);
+        return this.fail(ctx, runId, String(err));
+      }
+      return this.toState(ctx.data, runId);
     } finally {
       this.running.delete(runId);
     }
@@ -78,119 +102,177 @@ export class ModulePipeline {
     return true;
   }
 
-  private async run(
-    task: IWorkflowTask,
-    domain: ModuleDomain,
-    action: ModuleAction,
-    runId: string,
-    signal: AbortSignal
-  ): Promise<IPipelineState> {
+  private graphFor(action: ModuleAction, worker: IModuleWorker): INode<IPipelineData> {
+    const key = `${action}:${worker.id}`;
+    const cached = this.graphs.get(key);
+    if (cached) return cached;
+    const entry = new NodeGraphBuilder().build<IPipelineData>(this.specsFor(action, worker)).nodes.get(
+      ACTION_PHASES[action][0] ?? "done"
+    ) as INode<IPipelineData>;
+    this.graphs.set(key, entry);
+    return entry;
+  }
+
+  private specsFor(action: ModuleAction, worker: IModuleWorker): ReadonlyArray<{
+    id: string;
+    executor: INodeExecutor<IPipelineData>;
+    outgoing: readonly string[];
+    condition?: (ctx: INodeContext<IPipelineData>) => boolean;
+  }> {
     const phases = ACTION_PHASES[action];
-    const worker = this.pickWorker(domain, action);
-    let state: IPipelineState = {
-      runId,
-      phase: phases[0] ?? "spec",
-      externalId: task.externalId,
-      source: task.source,
-      attempts: 0,
-      action,
-    };
-    let cursor = 0;
-
-    while (cursor < phases.length) {
-      if (signal.aborted) return this.cancel(state);
-      const phase = phases[cursor];
-      if (!phase) break;
-      state = { ...state, phase };
-      await this.persist(state);
-
-      const verdict = await this.runPhase(task, worker, action, phase, signal);
-      if (signal.aborted) return this.cancel(state);
-
-      if (phase === "verification") {
-        if (verdict.error) {
-          state = { ...state, error: verdict.error };
-          await this.persist(state);
-        }
-        if (verdict.pass) {
-          state = { ...state, phase: "done" };
-          await this.persist(state);
-          this.bus.publish({ type: "pipeline.done", runId });
-          return state;
-        }
-        if (state.attempts + 1 >= this.maxAttempts) {
-          state = {
-            ...state,
-            phase: "failed",
-            error: verdict.error ?? `verification failed after ${state.attempts + 1} attempt(s)`,
-          };
-          await this.persist(state);
-          this.bus.publish({
-            type: "pipeline.failed",
-            runId,
-            error: state.error ?? "verification failed",
-          });
-          return state;
-        }
-        state = { ...state, attempts: state.attempts + 1 };
-        cursor = phases.indexOf(BACK_TO[action] ?? "tests");
-        continue;
-      }
-
-      if (verdict.error) {
-        state = { ...state, phase: "failed", error: verdict.error };
-        await this.persist(state);
-        this.bus.publish({ type: "pipeline.failed", runId, error: verdict.error });
-        return state;
-      }
-      cursor += 1;
+    const specs = phases.map((phase, index) => ({
+      id: phase,
+      executor: this.phaseExecutor(phase, worker, action),
+      outgoing: [index + 1 < phases.length ? phases[index + 1]! : "verdict"],
+    }));
+    const last = phases[phases.length - 1]!;
+    if (last === "verification") {
+      return [
+        ...specs,
+        {
+          id: "verdict",
+          executor: passThrough,
+          outgoing: ["retry", "fail", "done"],
+        },
+        {
+          id: "retry",
+          executor: this.retryExecutor(),
+          outgoing: [BACK_TO[action] ?? "tests"],
+          condition: (ctx) => ctx.data.pass === false && ctx.data.attempts + 1 < this.maxAttempts,
+        },
+        {
+          id: "fail",
+          executor: this.failExecutor(),
+          outgoing: [],
+          condition: (ctx) => ctx.data.pass === false && ctx.data.attempts + 1 >= this.maxAttempts,
+        },
+        {
+          id: "done",
+          executor: this.doneExecutor(),
+          outgoing: [],
+          condition: (ctx) => ctx.data.pass === true,
+        },
+      ];
     }
+    return [
+      ...specs.map((spec) =>
+        spec.outgoing[0] === "verdict" ? { ...spec, outgoing: ["done"] } : spec
+      ),
+      { id: "done", executor: this.doneExecutor(), outgoing: [] },
+    ];
+  }
 
-    state = { ...state, phase: "done" };
-    await this.persist(state);
-    this.bus.publish({ type: "pipeline.done", runId });
+  private phaseExecutor(phase: PipelinePhase, worker: IModuleWorker, action: ModuleAction): INodeExecutor<IPipelineData> {
+    return {
+      run: async (ctx: INodeContext<IPipelineData>): Promise<INodeContext<IPipelineData>> => {
+        if (ctx.signal.aborted) throw new Error("run stopped");
+        ctx.data.phase = phase;
+        await this.persist(ctx.data, ctx.runId);
+        try {
+          const result = await this.executor.runSession({
+            agent: worker.agentFor(action, phase),
+            sessionTitle: `${ctx.data.task.title} — ${phase}`,
+            prompt: worker.promptFor(action, phase, ctx.data.task),
+            signal: ctx.signal,
+          });
+          if (phase === "verification") {
+            ctx.data.pass = worker.verify(result.text);
+            ctx.data.error = undefined;
+          }
+        } catch (err) {
+          if (phase === "verification") {
+            const error = String(err);
+            console.warn(`[pipeline] phase ${phase} error: ${error}`);
+            ctx.data.pass = false;
+            ctx.data.error = error;
+          } else {
+            throw err;
+          }
+        }
+        return ctx;
+      },
+    };
+  }
+
+  private retryExecutor(): INodeExecutor<IPipelineData> {
+    return {
+      run: async (ctx) => {
+        ctx.data.attempts += 1;
+        return ctx;
+      },
+    };
+  }
+
+  private failExecutor(): INodeExecutor<IPipelineData> {
+    return {
+      run: async (ctx) => {
+        ctx.data.phase = "failed";
+        ctx.data.error = ctx.data.error ?? `verification failed after ${ctx.data.attempts + 1} attempt(s)`;
+        await this.saveState(ctx.data, ctx.runId);
+        this.bus.publish({ type: "pipeline.failed", runId: ctx.runId, error: ctx.data.error });
+        return ctx;
+      },
+    };
+  }
+
+  private doneExecutor(): INodeExecutor<IPipelineData> {
+    return {
+      run: async (ctx) => {
+        ctx.data.phase = "done";
+        ctx.data.error = undefined;
+        await this.saveState(ctx.data, ctx.runId);
+        this.bus.publish({ type: "pipeline.done", runId: ctx.runId });
+        return ctx;
+      },
+    };
+  }
+
+  private toState(data: IPipelineData, runId: string): IPipelineState {
+    return {
+      runId,
+      phase: data.phase,
+      externalId: data.task.externalId,
+      source: data.task.source,
+      attempts: data.attempts,
+      action: data.action,
+      error: data.error,
+    };
+  }
+
+  private persist(data: IPipelineData, runId: string): Promise<void> {
+    const state = this.toState(data, runId);
+    return this.saveState(data, runId).then(() => {
+      this.bus.publish({ type: "pipeline.phase", runId, phase: state.phase });
+    });
+  }
+
+  private saveState(data: IPipelineData, runId: string): Promise<void> {
+    return this.store.save(this.toState(data, runId));
+  }
+
+  private async cancel(ctx: INodeContext<IPipelineData>): Promise<IPipelineState> {
+    ctx.data.phase = "cancelled";
+    ctx.data.error = undefined;
+    const state = this.toState(ctx.data, ctx.runId);
+    await this.store.save(state);
+    this.bus.publish({ type: "pipeline.cancelled", runId: ctx.runId });
+    return state;
+  }
+
+  private async fail(ctx: INodeContext<IPipelineData>, runId: string, error: string): Promise<IPipelineState> {
+    ctx.data.phase = "failed";
+    ctx.data.error = error;
+    const state = this.toState(ctx.data, runId);
+    await this.store.save(state);
+    this.bus.publish({ type: "pipeline.failed", runId, error });
     return state;
   }
 
   private pickWorker(domain: ModuleDomain, action: ModuleAction): IModuleWorker {
     return this.registry.resolve(domain, action)[0] ?? this.fallback;
   }
-
-  private async persist(state: IPipelineState): Promise<void> {
-    await this.store.save(state);
-    this.bus.publish({ type: "pipeline.phase", runId: state.runId, phase: state.phase });
-  }
-
-  /**
-   * Финал остановки: состояние cancelled пишется напрямую (без pipeline.phase,
-   * чтобы фаза-терминал не попала в граф как текущая), затем — событие отмены.
-   */
-  private async cancel(state: IPipelineState): Promise<IPipelineState> {
-    const cancelled: IPipelineState = { ...state, phase: "cancelled", error: undefined };
-    await this.store.save(cancelled);
-    this.bus.publish({ type: "pipeline.cancelled", runId: cancelled.runId });
-    return cancelled;
-  }
-
-  private async runPhase(
-    task: IWorkflowTask,
-    worker: IModuleWorker,
-    action: ModuleAction,
-    phase: PipelinePhase,
-    signal: AbortSignal
-  ): Promise<{ pass: boolean; error?: string }> {
-    try {
-      const result = await this.executor.runSession({
-        agent: worker.agentFor(action, phase),
-        sessionTitle: `${task.title} — ${phase}`,
-        prompt: worker.promptFor(action, phase, task),
-        signal,
-      });
-      return { pass: worker.verify(result.text) };
-    } catch (err) {
-      const error = String(err);
-      console.warn(`[pipeline] phase ${phase} error: ${error}`);
-      return { pass: false, error };
-    }
-  }
 }
+
+const passThrough: INodeExecutor<IPipelineData> = {
+  run: async (ctx) => ctx,
+};
