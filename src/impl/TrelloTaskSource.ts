@@ -1,6 +1,5 @@
+import type { ICommandExecutor } from "../core/command.ts";
 import type { ITaskSource, IWorkflowTask } from "../core/task.ts";
-
-const TRELLO_API = "https://api.trello.com/1";
 
 interface TrelloCard {
   id: string;
@@ -12,46 +11,50 @@ interface TrelloCard {
   attachments?: Array<{ name?: string; url?: string }>;
 }
 
+interface TrelloList {
+  id: string;
+  name: string;
+}
+
 /**
  * Источник задач из Trello: карточки входного листа → IWorkflowTask,
- * ack перемещает карточку в Done-лист (как move.sh пак-а).
- * Ключи — только из env: TRELLO_API_KEY, TRELLO_TOKEN.
+ * ack перемещает карточку в Done-лист. Низкий уровень — через
+ * ICommandExecutor (TrelloConnector): сырого fetch здесь нет.
  */
 export class TrelloTaskSource implements ITaskSource {
   readonly id = "trello";
 
-  constructor(private readonly config: TrelloTaskSourceConfig) {}
+  constructor(
+    private readonly config: TrelloTaskSourceConfig,
+    private readonly commands: ICommandExecutor
+  ) {}
 
-  static fromEnv(): TrelloTaskSource {
-    return new TrelloTaskSource({
-      apiKey: process.env.TRELLO_API_KEY ?? "",
-      token: process.env.TRELLO_TOKEN ?? "",
-      board: process.env.TRELLO_BOARD ?? "",
-      inboxList: process.env.TRELLO_INBOX_LIST ?? "Inbox",
-      doneList: process.env.TRELLO_DONE_LIST ?? "Done",
-    });
-  }
-
-  private get creds() {
-    const { apiKey, token } = this.config;
-    if (!apiKey || !token) {
-      throw new Error("TRELLO_API_KEY и TRELLO_TOKEN должны быть в env (см. trello-task/README.md)");
-    }
-    return { key: apiKey, token };
+  static fromEnv(commands: ICommandExecutor): TrelloTaskSource {
+    return new TrelloTaskSource(
+      {
+        board: process.env.TRELLO_BOARD ?? "",
+        inboxList: process.env.TRELLO_INBOX_LIST ?? "Inbox",
+        doneList: process.env.TRELLO_DONE_LIST ?? "Done",
+      },
+      commands
+    );
   }
 
   async fetchNewTasks(limit = 50): Promise<IWorkflowTask[]> {
     const inboxListId = await this.listId(this.config.inboxList);
-    const cards = await this.get<TrelloCard[]>(
-      `/lists/${inboxListId}/cards`,
-      { filter: "open", limit: String(limit), attachments: "true", fields: "id,name,desc,url,idList,labels,attachments" }
-    );
-    return cards.map((c) => this.toTask(c));
+    const cards = await this.call<TrelloCard[]>("cards.list", {
+      listId: inboxListId,
+      filter: "open",
+      limit: String(limit),
+      attachments: "true",
+      fields: "id,name,desc,url,idList,labels,attachments",
+    });
+    return (cards ?? []).map((c) => this.toTask(c));
   }
 
   async ackTask(task: IWorkflowTask): Promise<void> {
     const doneListId = await this.listId(this.config.doneList);
-    await this.put(`/cards/${task.externalId}`, { idList: doneListId });
+    await this.call(`cards.move`, { cardId: task.externalId, idList: doneListId });
   }
 
   private toTask(card: TrelloCard): IWorkflowTask {
@@ -72,38 +75,23 @@ export class TrelloTaskSource implements ITaskSource {
   }
 
   private async listId(listName: string): Promise<string> {
-    const boards = await this.get<Array<{ id: string; name?: string }>>(
-      `/members/me/boards`,
-      { filter: "open", fields: "id,name" }
-    );
-    let board = boards.find((b) => b.name === this.config.board) ?? boards[0];
+    const boards = await this.call<Array<{ id: string; name?: string }>>("boards.list", {});
+    let board = (boards ?? []).find((b) => b.name === this.config.board) ?? (boards ?? [])[0];
     if (!board) throw new Error(`доска "${this.config.board}" не найдена`);
-    const lists = await this.get<Array<{ id: string; name?: string }>>(
-      `/boards/${board.id}/lists`,
-      { filter: "open", fields: "id,name" }
-    );
-    const found = lists.find((l) => l.name === listName);
+    const lists = await this.call<TrelloList[]>("lists.list", { boardId: board.id });
+    const found = (lists ?? []).find((l) => l.name === listName);
     if (!found) throw new Error(`лист "${listName}" не найден на доске "${board.name}"`);
     return found.id;
   }
 
-  private async get<T>(path: string, params: Record<string, string>): Promise<T> {
-    const query = new URLSearchParams({ ...this.creds, ...params });
-    const res = await fetch(`${TRELLO_API}${path}?${query}`);
-    if (!res.ok) throw new Error(`Trello GET ${path}: HTTP ${res.status}`);
-    return (await res.json()) as T;
-  }
-
-  private async put(path: string, params: Record<string, string>): Promise<void> {
-    const query = new URLSearchParams({ ...this.creds, ...params });
-    const res = await fetch(`${TRELLO_API}${path}?${query}`, { method: "PUT" });
-    if (!res.ok) throw new Error(`Trello PUT ${path}: HTTP ${res.status}`);
+  private async call<T>(op: string, params: Record<string, unknown>): Promise<T | null> {
+    const result = await this.commands.execute({ service: "trello", op, params });
+    if (!result.ok) throw new Error(`Trello ${op}: ${result.error}`);
+    return result.data as T;
   }
 }
 
 export interface TrelloTaskSourceConfig {
-  apiKey: string;
-  token: string;
   board: string;
   inboxList: string;
   doneList: string;
