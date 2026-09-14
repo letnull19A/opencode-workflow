@@ -221,22 +221,39 @@ name equals the `WorkflowEvent.type`; `data` is the JSON event plus an integer
 `ts` (ms epoch).
 
 ```ts
+type EntryPointIgnoreReason =
+  | "unknown_binding"
+  | "binding_disabled"
+  | "bad_signature"
+  | "misconfigured"
+  | "filter_mismatch"
+  | "matcher_reject"
+  | "duplicate_delivery";
+
 type WireEvent =
   | { type: "task.received"; task: IWorkflowTask }
+  | { type: "pipeline.started"; runId: string; task: IWorkflowTask; action: ModuleAction; domain: ModuleDomain }
   | { type: "pipeline.phase"; runId: string; phase: PipelinePhase }
   | { type: "pipeline.done"; runId: string }
   | { type: "pipeline.failed"; runId: string; error: string }
-  | { type: "pipeline.cancelled"; runId: string };
+  | { type: "pipeline.cancelled"; runId: string }
+  | { type: "pipeline.delivered"; runId: string; commit?: string; pushed: boolean }
+  | { type: "pipeline.delivery_failed"; runId: string; error: string }
+  | { type: "entrypoint.ignored"; hookId: string | null; reason: EntryPointIgnoreReason; detail?: string };
 ```
 
 | Frame type | data |
 |---|---|
 | `snapshot` | `{ events: WireEvent[], ts }` — replay of buffered history |
 | `task.received` | `{ type, task, ts }` |
+| `pipeline.started` | `{ type, runId, task, action, domain, ts }` — run begins |
 | `pipeline.phase` | `{ type, runId, phase, ts }` |
 | `pipeline.done` | `{ type, runId, ts }` |
 | `pipeline.failed` | `{ type, runId, error, ts }` |
 | `pipeline.cancelled` | `{ type, runId, ts }` — run stopped via `POST /module/:runId/stop` |
+| `pipeline.delivered` | `{ type, runId, commit?, pushed, ts }` — delivery committed/pushed the run |
+| `pipeline.delivery_failed` | `{ type, runId, error, ts }` |
+| `entrypoint.ignored` | `{ type, hookId, reason, detail?, ts }` — webhook ingress rejected |
 
 ```bash
 curl -N http://127.0.0.1:8787/stream

@@ -14,6 +14,7 @@ tags:
   - name: Run
   - name: Tasks
   - name: Modules
+  - name: Hooks
   - name: Stream
 
 paths:
@@ -249,16 +250,185 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-/stream:
+  /hooks:
+    get:
+      tags: [Hooks]
+      summary: List webhook bindings
+      operationId: listHooks
+      responses:
+        "200":
+          description: Current bindings (no secrets, only secretEnv names)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, hooks]
+                properties:
+                  ok:
+                    type: boolean
+                  hooks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookBinding"
+        "501":
+          description: Webhooks not wired into this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags: [Hooks]
+      summary: Create a webhook binding
+      operationId: createHook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookCreateRequest"
+      responses:
+        "201":
+          description: Binding created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, id, url]
+                properties:
+                  ok:
+                    type: boolean
+                  id:
+                    type: string
+                    description: Binding id, used in the ingress URL.
+                    example: hk_mre3xo6q
+                  url:
+                    type: string
+                    description: Relative ingress path.
+                    example: /hooks/hk_mre3xo6q
+        "400":
+          description: Missing source, unknown provider/action/domain or invalid JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Webhooks not wired into this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /hooks/{hookId}:
+    post:
+      tags: [Hooks]
+      summary: Webhook ingress (HMAC-protected) → entrypoint node → pipeline run
+      description: |
+        The registry delivers the raw body to the binding: verifies the
+        secret (`x-hub-signature-256` HMAC SHA-256 over the raw body when the
+        binding pins a `secretEnv`), de-duplicates GitHub/X-Hub deliveries, and
+        starts a module run through the webhook entrypoint node. Every
+        rejection is published to the bus as `entrypoint.ignored` (nothing is
+        silently dropped).
+      operationId: hookIngress
+      parameters:
+        - name: hookId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: hk_mre3xo6q
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              description: "Provider-specific payload (generic: task-shaped; github: workflow_run webhook)."
+              type: object
+      responses:
+        "200":
+          description: Accepted (started) or duplicate delivery rejected (started=false)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, received, started]
+                properties:
+                  ok:
+                    type: boolean
+                  received:
+                    type: boolean
+                  started:
+                    type: boolean
+                    description: False for a duplicate delivery id.
+                  duplicate:
+                    type: boolean
+        "401":
+          description: Bad HMAC signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Unknown or disabled binding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Env secret pinned by secretEnv is missing (misconfigured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [Hooks]
+      summary: Remove a webhook binding
+      operationId: removeHook
+      parameters:
+        - name: hookId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: hk_mre3xo6q
+      responses:
+        "200":
+          description: Binding removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, removed]
+                properties:
+                  ok:
+                    type: boolean
+                  removed:
+                    type: string
+        "404":
+          description: No such binding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Webhooks not wired into this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /stream:
     get:
       tags: [Stream]
       summary: SSE stream of platform events (snapshot + live)
       description: |
         Server-Sent-Events endpoint used by the web dashboard. It first emits
         a `snapshot` event carrying the recent event history, then pushes live
-        events (`task.received`, `pipeline.phase`, `pipeline.done`,
-        `pipeline.failed`, `pipeline.cancelled`) as they are published to the
-        bus. Event source buffers up to `EVENT_HISTORY_LIMIT` events (default 200).
+        events (`task.received`, `pipeline.started`, `pipeline.phase`,
+        `pipeline.done`, `pipeline.failed`, `pipeline.cancelled`,
+        `pipeline.delivered`, `pipeline.delivery_failed`,
+        `entrypoint.ignored`) as they are published to the bus. Event source
+        buffers up to `EVENT_HISTORY_LIMIT` events (default 200).
       responses:
         "200":
           description: text/event-stream connection (kept open; ~15s pings)
@@ -404,6 +574,54 @@ components:
         stopped:
           type: boolean
           description: True when the stop signal reached an active run.
+    WebhookBinding:
+      type: object
+      description: Persistent webhook binding. Never contains secrets — only the name of the env variable holding them.
+      required: [id, source, provider, enabled, createdAt]
+      properties:
+        id:
+          type: string
+          description: hk_… binding id.
+          example: hk_mre3xo6q
+        source:
+          type: string
+          description: Origin identifier surfaced as the run's task.source.
+          example: github
+        provider:
+          type: string
+          enum: [github, generic]
+          description: Payload shape / filter.
+        action:
+          $ref: "#/components/schemas/ModuleAction"
+        domain:
+          $ref: "#/components/schemas/ModuleDomain"
+        secretEnv:
+          type: string
+          description: Env variable holding the HMAC secret; verified at ingress.
+          example: GITHUB_WEBHOOK_SECRET
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    WebhookCreateRequest:
+      type: object
+      required: [source, provider]
+      properties:
+        source:
+          type: string
+        provider:
+          type: string
+          enum: [github, generic]
+        action:
+          $ref: "#/components/schemas/ModuleAction"
+        domain:
+          $ref: "#/components/schemas/ModuleDomain"
+        secretEnv:
+          type: string
+        enabled:
+          type: boolean
+          default: true
     PipelineState:
       type: object
       description: Persisted snapshot of a pipeline run.

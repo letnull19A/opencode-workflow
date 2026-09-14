@@ -18,6 +18,10 @@ For the formal wire schemas (types, field tables, machine-readable spec) see
 | `POST` | `/module` | Start a module pipeline by title → `202` with `runId` |
 | `GET` | `/module/:runId` | Persisted pipeline state for a run |
 | `POST` | `/module/:runId/stop` | Stop an active run → `cancelled` via `pipeline.cancelled` |
+| `GET` | `/hooks` | List webhook bindings |
+| `POST` | `/hooks` | Create a webhook binding → `201` with ingress `url` |
+| `POST` | `/hooks/:hookId` | Webhook ingress → entrypoint node → pipeline run |
+| `DELETE` | `/hooks/:hookId` | Remove a webhook binding |
 | `GET` | `/stream` | SSE stream of platform events (`snapshot` + live) |
 
 ## GET /health
@@ -99,6 +103,67 @@ curl -X POST http://127.0.0.1:8787/module/run-cli-user-profile/stop
 
 `404` if no run with that id exists; `409` (with the current `state`) if the
 run is known but not active — already `done`, `failed` or `cancelled`.
+
+## GET /hooks
+
+Lists webhook bindings. Secrets are never returned — only the *name* of the
+env variable (`secretEnv`) holding the HMAC secret:
+
+```bash
+curl http://127.0.0.1:8787/hooks
+# { "ok": true, "hooks": [{ "id": "hk_mre3xo6q", "source": "github", "provider": "github", "enabled": true, "createdAt": "…" }] }
+```
+
+## POST /hooks
+
+Creates a webhook binding (persisted under `STATE_DIR/hooks/`):
+
+```bash
+curl -X POST http://127.0.0.1:8787/hooks \
+  -H 'content-type: application/json' \
+  -d '{"source":"github-ci","provider":"github","action":"add","secretEnv":"GITHUB_WEBHOOK_SECRET"}'
+# 201 { "ok": true, "id": "hk_mre3xo6q", "url": "/hooks/hk_mre3xo6q" }
+```
+
+- `source` (required) and `provider` (`github` | `generic`) are mandatory;
+  `action`/`domain` pin the module strategy (else detected from the payload);
+  `secretEnv` names the env variable with the HMAC secret; `enabled` defaults
+  to `true`.
+
+## POST /hooks/:hookId
+
+Webhook ingress. The raw body is HMAC-SHA256-verified (header
+`x-hub-signature-256`) when the binding pins a `secretEnv`, delivery ids are
+de-duplicated (`x-github-delivery` / `delivery_id`, bounded by
+`DELIVERY_DEDUP_LIMIT`), then a module run is started through the webhook
+entrypoint node:
+
+```bash
+curl -X POST http://127.0.0.1:8787/hooks/hk_mre3xo6q \
+  -H 'content-type: application/json' \
+  -d '{"externalId":"card-7","title":"Add audit trail module"}'
+# { "ok": true, "received": true, "started": true }
+```
+
+Every rejection publishes `entrypoint.ignored` to the bus — nothing is
+silently dropped:
+
+| status | reason (`entrypoint.ignored`) | meaning |
+|---|---|---|
+| `404` | `unknown_binding` / `binding_disabled` | no such binding, or binding disabled |
+| `500` | `misconfigured` | `secretEnv` variable missing from env |
+| `401` | `bad_signature` | HMAC mismatch or missing header |
+| `200` (duplicate) | `duplicate_delivery` | delivery id already seen (`started=false`) |
+| `200` | — | accepted; run id comes via `pipeline.started` on the bus |
+
+## DELETE /hooks/:hookId
+
+Removes a binding (and its cached entrypoint node):
+
+```bash
+curl -X DELETE http://127.0.0.1:8787/hooks/hk_mre3xo6q
+# { "ok": true, "removed": "hk_mre3xo6q" }
+```
 
 ## GET /stream
 

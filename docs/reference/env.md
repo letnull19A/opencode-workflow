@@ -16,6 +16,8 @@ All configuration is injected through environment variables.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8787` | Webhook port |
+| `EVENT_HISTORY_LIMIT` | `200` | SSE snapshot replay window (bounded event history in the bus) |
+| `DELIVERY_DEDUP_LIMIT` | `500` | Max tracked delivery ids for webhook de-duplication |
 
 ## Task sources & watcher
 
@@ -43,6 +45,32 @@ All configuration is injected through environment variables.
 | `PIPELINE_MAX_RETRIES` | `3` | Verification-retry budget; exhaustion → `failed` |
 | `PHASE_TIMEOUT_MS` | `1200000` (20 min) | Per-phase model budget; expiry fails the run |
 | `PHASE_SETTLE_MS` | `60000` | Silence window that completes a phase for providers missing step-finish events |
+
+## Delivery
+
+The delivery step is opt-in and runs in the current working directory
+(`PROJECT_DIR` when set). It commits the finished run and conditionally pushes
+it. Prerequisites from the pack `.opencode/` apply (see
+[/reference/pack](/reference/pack)).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DELIVERY_ENABLED` | `0` | `1` → subscribe `pipeline.done` and commit the run's changes |
+| `DELIVERY_PUSH` | `0` | `1` → also push to the remote after committing |
+| `PROJECT_DIR` | cwd | Repository the delivery commits into |
+
+## Webhook bindings & secrets
+
+Webhook bindings are stored under `STATE_DIR/hooks/`. A binding may pin an
+env variable by name (`secretEnv`) that holds its HMAC secret — the variable
+must be set in the webhook process's environment at ingest time. Example:
+
+```bash
+export GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+# POST /hooks  { "source": "github-ci", "provider": "github", "secretEnv": "GITHUB_WEBHOOK_SECRET" }
+```
+
+Ingress verifies the `x-hub-signature-256` HMAC SHA-256 over the **raw body**.
 
 ## Secrets
 

@@ -18,8 +18,8 @@ streams run statuses over SSE. It lives in `web/` and talks to the webhook API
 | Area | Content |
 |---|---|
 | Header | app title, SSE connection badge, run counter, OpenAPI link |
-| Left sidebar | **Start a module run** form (title + auto/explicit action & domain) and the list of observed runs |
-| Main canvas | React Flow graph of the selected run: task node → phases → terminal (done/failed) |
+| Left sidebar | **Start a module run** form, **Webhooks** panel (list / create / delete bindings), and the list of observed runs |
+| Main canvas | React Flow graph of the selected run: entry point → task → phases → terminal (done/failed) |
 | Right panel | Live event log (timestamped, severity-coloured) |
 
 ## Live model
@@ -29,14 +29,39 @@ streams run statuses over SSE. It lives in `web/` and talks to the webhook API
 1. Opens `EventSource("/stream")` — Vite proxies `/stream` to the webhook.
 2. On connect a `snapshot` frame **rebuilds** the run state (replay), then live
    frames apply as deltas (`pipeline.phase` → phase status, `pipeline.done`
-   /`pipeline.failed` → terminal; `task.received` → run titles from external
-   tasks).
+   /`pipeline.failed` → terminal; `pipeline.started` → webhook-originated runs
+   with their action/domain; `task.received` → run titles from external tasks).
 3. `registerAndStart` calls `POST /module` and optimistically registers the run
    so the graph renders immediately, before the first phase event arrives.
 
 Phase statuses: `pending` (muted), `running` (blue, pulsing), `done` (green),
 `error` (red). The edge into the current phase is animated; a failed run turns
 the terminal node red with the error message.
+
+## Entry point node
+
+Every run graphs an **entry** node first — a violet diamond labelled with the
+task `source` (`cli`, `file`, `trello`, or the webhook binding's source). Runs
+that entered via a webhook keep their binding source, so the dashboard makes
+the ingress path visible at a glance. Edges run entry → task → phases →
+terminal; the entry→task edge is violet to distinguish the trigger hop.
+
+## Webhooks panel
+
+The sidebar panel manages bindings through the `/hooks` API:
+
+- **List** (on load, reload button) — each row: enabled dot, `source`,
+  provider badge, pinned `action`/`domain`, optional `secretEnv` name and the
+  ingress path `/hooks/:id`.
+- **Create** — `source` + `provider` (github/generic), optional explicit
+  `action`/`domain` (auto-detection otherwise), optional `secretEnv`.
+- **Delete** — removes the binding and its cached entrypoint node.
+
+Ingress and every rejection live in the event stream: accepted runs flow
+through `pipeline.started → pipeline.phase → pipeline.done`; ignored
+deliveries appear as `entrypoint.ignored` (red lines with the rejection
+reason), so duplicate deliveries, bad signatures, disabled bindings and
+unknown hooks are never silently dropped.
 
 ## Stopping a run
 

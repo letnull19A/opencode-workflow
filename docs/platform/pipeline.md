@@ -1,8 +1,11 @@
 # Module Pipeline
 
-`ModulePipeline` is the heart of the platform — a small state machine that
-develops a module through a sequence of phases, retrying verification against a
-budget.
+`ModulePipeline` is the heart of the platform — a phase graph over the shared
+node runner. Each phase is a node; `verification` branches through guard nodes
+(`retry`/`fail`/`done`) that retry the `BACK_TO` phase against a budget. The
+graph is built with `NodeGraphBuilder` and executed by `DepthFirstNodeRunner`
+with a per-run context (`INodeContext<IPipelineData>`) and an `AbortController`
+signal.
 
 ## Actions and their phase maps
 
@@ -39,21 +42,51 @@ The retry target on verification failure is `BACK_TO`:
 
 ```
 start(task, domain, action)
-  phases   = ACTION_PHASES[action]
   worker   = registry.resolve(domain, action)[0]  (general is the fallback)
   runId    = run-<source>-<externalId>
+  graph    = graphFor(action, worker)             (cached per action+worker)
+  ctx      = MapNodeContext<IPipelineData>(runId, stopper.signal, { task, action, domain, attempts: 0 })
+  runner.run(graph.nodes[firstPhase], ctx)
 ```
 
-- For every phase the worker builds a prompt, `agentFor` selects the proxy
-  agent and the executor runs a session.
+- The graph is built once per `action+worker` (`NodeGraphBuilder` four passes:
+  validate ids/outgoing/self-loops → instantiate → resolve outgoing → derive
+  `incoming` mirrors) and cached; runs reuse it with per-run contexts.
+- Every phase node builds a prompt (`worker.promptFor`) with the current task,
+  selects the proxy agent (`worker.agentFor`), and runs a session via the
+  executor. Phases persist their state and publish `pipeline.phase` *before*
+  running the session (matching the linear semantics).
 - `verification` is the only gate: `worker.verify(text)` **passes if the output
-  does not contain the `FAIL` marker**. On fail the pipeline returns to the
-  `BACK_TO` phase, increments `attempts` and retries.
-- Exhausting `PIPELINE_MAX_RETRIES` (default `3`) → `failed`.
-- An **error in any phase** (for example a per-phase timeout) fails the run with
-  the error captured, rather than silently skipping ahead.
-- Every transition is persisted via `IPipelineStateStore` and published on the
-  bus (`pipeline.phase`, `pipeline.done`, `pipeline.failed`).
+  does not contain the `FAIL` marker**. The `retry` guard increments
+  `attempts` and re-enters the `BACK_TO` phase; `fail`/`done` guards have
+  mutually exclusive conditions:
+
+  - retry: `pass=false` and `attempts + 1 < PIPELINE_MAX_RETRIES`
+  - fail:   `pass=false` and `attempts + 1 ≥ PIPELINE_MAX_RETRIES`
+  - done:   `pass=true`
+
+- An **error in a non-verification phase** throws and fails the run with the
+  error captured, rather than silently skipping ahead. An error at the
+  `verification` session counts as a failed verification (retry budget).
+- `stop()` aborts the run's `AbortController` — the runner and in-flight
+  session propagate it and the run finalises as `cancelled`.
+
+## Events
+
+`WorkflowEvent` published to the bus over a run's lifetime:
+
+| Event | Payload | When |
+|---|---|---|
+| `pipeline.started` | `{ runId, task, action, domain }` | run begins |
+| `pipeline.phase` | `{ runId, phase }` | each phase starts (non-terminal) |
+| `pipeline.done` | `{ runId }` | verification passed (or last non-code phase finished) |
+| `pipeline.failed` | `{ runId, error }` | budget exhausted or phase error |
+| `pipeline.cancelled` | `{ runId }` | `stop()` aborted the run |
+| `pipeline.delivered` | `{ runId, commit?, pushed }` | delivery committed the run |
+| `pipeline.delivery_failed` | `{ runId, error }` | delivery aborted |
+
+Terminal events never emit a `pipeline.phase`, so a terminal phase never
+becomes the "current" phase in the graph view.
 
 ## State
 
