@@ -10,6 +10,7 @@ import type { ModuleAction, ModuleDomain, ModuleStartResponse } from "@/lib/type
 import { KNOWN_ACTIONS, KNOWN_DOMAINS } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { RunInfo } from "@/lib/workflow";
+import { WebhooksPanel } from "./WebhooksPanel";
 
 export interface SidebarProps {
   runs: RunInfo[];
@@ -23,6 +24,7 @@ export function Sidebar({ runs, selectedRunId, onSelect, onStart, onStop }: Side
   return (
     <div className="flex h-full flex-col gap-3">
       <StartModuleForm onStart={onStart} />
+      <WebhooksPanel />
       <Card className="flex min-h-0 flex-1 flex-col">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Runs</CardTitle>

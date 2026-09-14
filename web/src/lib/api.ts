@@ -1,4 +1,12 @@
-import type { ModuleAction, ModuleDomain, ModuleStartResponse, ModuleStopResponse } from "./types";
+import type {
+  ModuleAction,
+  ModuleDomain,
+  ModuleStartResponse,
+  ModuleStopResponse,
+  HooksListResponse,
+  HookCreateResponse,
+  HookDeleteResponse,
+} from "./types";
 
 const API_BASE = "";
 
@@ -32,5 +40,33 @@ export function startModule(
 export function stopModule(runId: string): Promise<ModuleStopResponse> {
   return request<ModuleStopResponse>(`/module/${encodeURIComponent(runId)}/stop`, {
     method: "POST",
+  });
+}
+
+/** GET /hooks — список вебхук-биндингов. */
+export function listHooks(): Promise<HooksListResponse> {
+  return request<HooksListResponse>("/hooks");
+}
+
+/** POST /hooks — создание вебхук-биндинга. */
+export function createHook(body: {
+  source: string;
+  provider: "github" | "generic";
+  action?: ModuleAction;
+  domain?: ModuleDomain;
+  secretEnv?: string;
+  enabled?: boolean;
+}): Promise<HookCreateResponse> {
+  return request<HookCreateResponse>("/hooks", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** DELETE /hooks/:id — удаление вебхук-биндинга. */
+export function deleteHook(id: string): Promise<HookDeleteResponse> {
+  return request<HookDeleteResponse>(`/hooks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
   });
 }

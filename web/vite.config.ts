@@ -25,6 +25,8 @@ export default defineConfig({
       "/task": apiHost,
       "/module": apiHost,
       "/run": apiHost,
+      "/hooks": apiHost,
+      "/openapi.yaml": apiHost,
     },
   },
 });

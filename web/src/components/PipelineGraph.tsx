@@ -13,11 +13,13 @@ import {
 import { Workflow } from "lucide-react";
 import type { RunInfo } from "@/lib/workflow";
 import type { PipelinePhase } from "@/lib/types";
+import { EntryNode, type EntryNodeData } from "./EntryNode";
 import { PhaseNode, type PhaseNodeData } from "./PhaseNode";
 import { TaskNode, type TaskNodeData } from "./TaskNode";
 import { TerminalNode, type TerminalNodeData } from "./TerminalNode";
 
 const nodeTypes = {
+  entry: EntryNode,
   task: TaskNode,
   phase: PhaseNode,
   terminal: TerminalNode,
@@ -26,6 +28,7 @@ const nodeTypes = {
 const NODE_GAP = 236;
 const START_X = 24;
 const CENTER_Y = 0;
+const TASK_OFFSET = 190;
 
 interface PipelineGraphProps {
   run: RunInfo | null;
@@ -86,9 +89,19 @@ function buildNodes(run: RunInfo | null): Node[] {
       : ["spec", "planning", "tests", "implementation", "verification"];
 
   nodes.push({
+    id: `entry-${run.runId}`,
+    type: "entry",
+    position: { x: START_X, y: CENTER_Y - 34 },
+    data: {
+      source: run.source ?? "?",
+      runId: run.runId,
+    } satisfies EntryNodeData,
+  });
+
+  nodes.push({
     id: `task-${run.runId}`,
     type: "task",
-    position: { x: START_X, y: CENTER_Y - 34 },
+    position: { x: START_X + TASK_OFFSET, y: CENTER_Y - 34 },
     data: {
       title: run.title,
       runId: run.runId,
@@ -101,7 +114,7 @@ function buildNodes(run: RunInfo | null): Node[] {
     nodes.push({
       id: `phase-${run.runId}-${phase}`,
       type: "phase",
-      position: { x: START_X + NODE_GAP * (index + 1), y: CENTER_Y - 28 },
+      position: { x: START_X + TASK_OFFSET + NODE_GAP * (index + 1), y: CENTER_Y - 28 },
       data: {
         label: phase,
         status: run.phases[phase] ?? "pending",
@@ -111,7 +124,7 @@ function buildNodes(run: RunInfo | null): Node[] {
     });
   });
 
-  const terminalX = START_X + NODE_GAP * (phases.length + 1);
+  const terminalX = START_X + TASK_OFFSET + NODE_GAP * (phases.length + 1);
   nodes.push({
     id: `terminal-${run.runId}`,
     type: "terminal",
@@ -133,8 +146,19 @@ function buildEdges(run: RunInfo | null): Edge[] {
       : ["spec", "planning", "tests", "implementation", "verification"];
   const edges: Edge[] = [];
 
+  const entryId = `entry-${run.runId}`;
+  const taskId = `task-${run.runId}`;
   const via = (phase: string) => `phase-${run.runId}-${phase}`;
-  const from = (phase: string | null): string => (phase ? via(phase) : `task-${run.runId}`);
+  const from = (phase: string | null): string => (phase ? via(phase) : taskId);
+
+  edges.push({
+    id: `edge-${entryId}-${taskId}`,
+    source: entryId,
+    target: taskId,
+    type: "smoothstep",
+    animated: false,
+    style: { stroke: "#8b5cf6", strokeWidth: 1.5 },
+  });
 
   const chain: Array<{ from: string; to: string }> = [];
   for (let i = 0; i < phases.length; i++) {
@@ -147,7 +171,7 @@ function buildEdges(run: RunInfo | null): Edge[] {
       run.status === "running"
         ? run.currentPhase
           ? `phase-${run.runId}-${run.currentPhase}`
-          : `task-${run.runId}`
+          : taskId
         : `terminal-${run.runId}`;
     const stroke = run.status === "failed" ? "#ef4444" : run.status === "cancelled" ? "#f59e0b" : "#10b981";
     edges.push({

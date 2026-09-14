@@ -99,6 +99,26 @@ function rebuildFromEvents(events: WireEvent[], previous: RunInfo[]): Record<str
         runs[runId] = { ...existing, title: event.task.title, source: event.task.source };
       }
     }
+    if (event.type === "pipeline.started") {
+      runId = event.runId;
+      const existing = runs[runId];
+      if (!existing) {
+        runs[runId] = makeRun(runId, {
+          title: event.task.title,
+          source: event.task.source,
+          action: event.action,
+          domain: event.domain,
+        });
+      } else {
+        runs[runId] = {
+          ...existing,
+          title: event.task.title,
+          source: event.task.source,
+          action: existing.action ?? event.action,
+          domain: existing.domain ?? event.domain,
+        };
+      }
+    }
     if (event.type === "pipeline.phase") {
       const run = runs[event.runId] ?? makeRun(event.runId);
       const prev = run.currentPhase;
@@ -228,6 +248,26 @@ function reducer(state: WorkflowState, action: Action): WorkflowState {
         );
       }
 
+if (event.type === "pipeline.started") {
+        const run = state.runs[event.runId];
+        const runs = {
+          ...state.runs,
+          [event.runId]: run
+            ? { ...run, title: event.task.title, source: event.task.source, action: run.action ?? event.action, domain: run.domain ?? event.domain, updatedAt: action.ts }
+            : makeRun(event.runId, {
+                title: event.task.title,
+                source: event.task.source,
+                action: event.action,
+                domain: event.domain,
+              }),
+        };
+        const order = runs[event.runId] && !state.order.includes(event.runId) ? [event.runId, ...state.order] : state.order;
+        return pushLog(
+          { ...state, runs, order },
+          { ts: action.ts, severity: "accent", text: `${event.runId} → pipeline.started` }
+        );
+      }
+
       if (event.type === "pipeline.phase") {
         const run = state.runs[event.runId] ?? makeRun(event.runId);
         const prev = run.currentPhase;
@@ -305,6 +345,31 @@ function reducer(state: WorkflowState, action: Action): WorkflowState {
           { ts: action.ts, severity: "muted", text: `${event.runId} → cancelled` }
         );
       }
+
+      if (event.type === "pipeline.delivered") {
+        const committed = event.commit ? `commit=${event.commit}` : "commit=∅";
+        return pushLog(
+          state,
+          { ts: action.ts, severity: "success", text: `${event.runId} → delivered (${committed}, pushed=${event.pushed})` }
+        );
+      }
+
+      if (event.type === "pipeline.delivery_failed") {
+        return pushLog(
+          state,
+          { ts: action.ts, severity: "error", text: `${event.runId} → delivery failed: ${event.error}` }
+        );
+      }
+
+      if (event.type === "entrypoint.ignored") {
+        const hook = event.hookId ?? "?";
+        const detail = event.detail ? ` ${event.detail}` : "";
+        const severity: LogEntry["severity"] = event.reason === "duplicate_delivery" ? "muted" : "error";
+        return pushLog(
+          state,
+          { ts: action.ts, severity, text: `webhook ${hook} ignored → ${event.reason}${detail}` }
+        );
+      }
       return state;
     }
 
@@ -363,10 +428,14 @@ export function useWorkflow() {
       }
     });
     es.addEventListener("task.received", wire("task.received"));
+    es.addEventListener("pipeline.started", wire("pipeline.started"));
     es.addEventListener("pipeline.phase", wire("pipeline.phase"));
     es.addEventListener("pipeline.done", wire("pipeline.done"));
     es.addEventListener("pipeline.failed", wire("pipeline.failed"));
     es.addEventListener("pipeline.cancelled", wire("pipeline.cancelled"));
+    es.addEventListener("pipeline.delivered", wire("pipeline.delivered"));
+    es.addEventListener("pipeline.delivery_failed", wire("pipeline.delivery_failed"));
+    es.addEventListener("entrypoint.ignored", wire("entrypoint.ignored"));
 
     return () => {
       es.close();
