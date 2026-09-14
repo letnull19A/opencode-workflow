@@ -1,36 +1,30 @@
 {
 	"name": "opencode-workflow",
 	"version": "1.0.0",
+	"private": true,
 	"type": "module",
-	"scripts": {
-		"start": "bun src/cli/index.ts",
-		"webhook": "bun src/http/main.ts",
-		"watch": "bun src/cli/watcher.ts",
-		"typecheck": "tsc --noEmit",
-		"test": "bun test",
-		"test:graph": "bun test src/impl/node.test.ts",
-		"docs:dev": "vitepress dev docs",
-		"docs:build": "vitepress build docs",
-		"docs:preview": "vitepress preview docs",
-		"web:dev": "bun --cwd=web run dev",
-		"web:build": "bun --cwd=web run build",
-		"web:preview": "bun --cwd=web run preview",
-		"dev": "pm2 start ecosystem.config.cjs",
-		"dev:status": "pm2 status",
-		"dev:logs": "pm2 logs",
-		"dev:restart": "pm2 restart ecosystem.config.cjs",
-		"dev:save": "pm2 save",
-		"dev:stop": "pm2 stop ecosystem.config.cjs",
-		"dev:kill": "pm2 kill"
-	},
-	"dependencies": {
-		"@opencode-ai/sdk": "^1.18.30"
-	},
 	"packageManager": "pnpm@12.4.1+sha512.2e81e399d73fe8390dab25e06aa788ab7a5908248d2f5a370f82b481147a6a7a367bf8048f9a6fdb6460f21a66f0542dedb8b94ca2c8723596741920b1656d4c",
-	"devDependencies": {
-		"@types/bun": "^1.4.2",
-		"pm2": "^7.0.4",
-		"typescript": "^7.0.2",
-		"vitepress": "^1.6.4"
+	"scripts": {
+		"typecheck": "pnpm -r run typecheck",
+		"test": "pnpm -r run test",
+		"test:graph": "pnpm --filter @opencode-workflow/platform run test:graph",
+		"webhook": "pnpm --filter @opencode-workflow/platform run webhook",
+		"start": "pnpm --filter @opencode-workflow/platform run start",
+		"watch": "pnpm --filter @opencode-workflow/platform run watch",
+		"watch-workflows": "pnpm --filter @opencode-workflow/platform run watch-workflows",
+		"build-workflow": "pnpm --filter @opencode-workflow/platform run build-workflow",
+		"docs:dev": "pnpm --filter @opencode-workflow/platform run docs:dev",
+		"docs:build": "pnpm --filter @opencode-workflow/platform run docs:build",
+		"docs:preview": "pnpm --filter @opencode-workflow/platform run docs:preview",
+		"web:dev": "pnpm --filter @opencode-workflow/web run dev",
+		"web:build": "pnpm --filter @opencode-workflow/web run build",
+		"web:preview": "pnpm --filter @opencode-workflow/web run preview",
+		"dev": "pnpm --filter @opencode-workflow/platform run dev",
+		"dev:status": "pnpm --filter @opencode-workflow/platform run dev:status",
+		"dev:logs": "pnpm --filter @opencode-workflow/platform run dev:logs",
+		"dev:restart": "pnpm --filter @opencode-workflow/platform run dev:restart",
+		"dev:save": "pnpm --filter @opencode-workflow/platform run dev:save",
+		"dev:stop": "pnpm --filter @opencode-workflow/platform run dev:stop",
+		"dev:kill": "pnpm --filter @opencode-workflow/platform run dev:kill"
 	}
 }

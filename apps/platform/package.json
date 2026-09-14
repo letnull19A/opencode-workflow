@@ -1,0 +1,35 @@
+{
+  "name": "@opencode-workflow/platform",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun src/cli/index.ts",
+    "webhook": "bun src/http/main.ts",
+    "watch": "bun src/cli/watcher.ts",
+    "watch-workflows": "bun src/cli/watch-workflows.ts",
+    "build-workflow": "bun src/cli/build-workflow.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:graph": "bun test src/engine/node.test.ts",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
+    "dev": "pm2 start ecosystem.config.cjs",
+    "dev:status": "pm2 status",
+    "dev:logs": "pm2 logs",
+    "dev:restart": "pm2 restart ecosystem.config.cjs",
+    "dev:save": "pm2 save",
+    "dev:stop": "pm2 stop ecosystem.config.cjs",
+    "dev:kill": "pm2 kill"
+  },
+  "dependencies": {
+    "@opencode-workflow/sdk": "workspace:*",
+    "@opencode-ai/sdk": "^1.18.30"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "pm2": "^7.0.4",
+    "typescript": "^7.0.2",
+    "vitepress": "^1.6.4"
+  }
+}
