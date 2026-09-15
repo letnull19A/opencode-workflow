@@ -1,7 +1,7 @@
 import type { IWorkflowTask } from "./task.ts";
 import type { INode, INodeContext } from "./node.ts";
 
-export type WebhookProvider = "github" | "generic";
+export type WebhookProvider = "github" | "generic" | "trello";
 
 /**
  * Динамическая привязка вебхука: внешнее событие биндится на workflow
@@ -29,7 +29,13 @@ export interface IWebhookStore {
 }
 
 export type WebhookFilterResult =
-  | { readonly accepted: true; readonly task: IWorkflowTask }
+  | {
+      readonly accepted: true;
+      readonly task: IWorkflowTask;
+      readonly kind: "received" | "moved";
+      readonly fromList?: string;
+      readonly toList?: string;
+    }
   | { readonly accepted: false; readonly reason: string };
 
 /** Маппер провайдера: сырой payload вебхука → нормализованная задача. */

@@ -39,7 +39,10 @@ async function main(): Promise<void> {
   const workflowsDir = process.env.WORKFLOWS_DIR ?? "workflows";
   const loader = new WorkflowDirLoader(workflowsDir, workflows, { executor, commands, bus, store }, bus);
   await loader.sync();
-  const router = new WorkflowTaskRouter(bus, workflows, parseWorkflowIds(process.env.WORKFLOW_ON_TASK_RECEIVED));
+  const router = new WorkflowTaskRouter(bus, workflows, {
+    onReceived: parseWorkflowIds(process.env.WORKFLOW_ON_TASK_RECEIVED),
+    onMoved: parseWorkflowIds(process.env.WORKFLOW_ON_TASK_MOVED),
+  });
 
   const source = pickTaskSource(commands);
   const watcher = new TaskWatcher(source, bus);

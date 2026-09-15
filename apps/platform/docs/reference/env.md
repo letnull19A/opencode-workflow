@@ -104,9 +104,10 @@ keeps working in parallel).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WORKFLOW_ON_TASK_RECEIVED` | (empty) | CSV-список id workflow-реакторов, запускаемых на каждый `task.received` (например `trello-notify`) |
+| `WORKFLOW_ON_TASK_RECEIVED` | (empty) | CSV-список id workflow-реакторов (Trello-карточка → Task), запускаемых на каждый `task.received` |
+| `WORKFLOW_ON_TASK_MOVED` | (empty) | CSV-список id workflow-реакторов, запускаемых на каждый `task.moved` (перемещение карточки между листами; в `task.meta.move` лежат `fromList`/`toList`) |
 
-Example — "новый Trello-тикет → Telegram":
+Example — «новый Trello-тикет → Telegram»:
 
 ```bash
 cd apps/platform

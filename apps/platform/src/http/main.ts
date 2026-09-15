@@ -20,6 +20,7 @@ import { GitHubConnector } from "../impl/GitHubConnector.ts";
 import { WorkflowTaskRouter, parseWorkflowIds } from "../impl/WorkflowTaskRouter.ts";
 import { GitHubWebhookProvider } from "../impl/providers/GitHubWebhookProvider.ts";
 import { GenericWebhookProvider } from "../impl/providers/GenericWebhookProvider.ts";
+import { TrelloWebhookProvider } from "../impl/providers/TrelloWebhookProvider.ts";
 import { ScriptDelivery } from "../impl/ScriptDelivery.ts";
 import type { IEventBus } from "../core/events.ts";
 import type { IWorkflowTask } from "@opencode-workflow/sdk";
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
     providers: new Map<string, IWebhookProvider>([
       ["github", new GitHubWebhookProvider()],
       ["generic", new GenericWebhookProvider()],
+      ["trello", new TrelloWebhookProvider()],
     ]),
   };
 
@@ -62,7 +64,10 @@ async function main(): Promise<void> {
   const loader = new WorkflowDirLoader(workflowsDir, workflows, { executor, commands, bus, store }, bus);
   await loader.sync();
 
-  const taskRouter = new WorkflowTaskRouter(bus, workflows, parseWorkflowIds(process.env.WORKFLOW_ON_TASK_RECEIVED));
+  const taskRouter = new WorkflowTaskRouter(bus, workflows, {
+    onReceived: parseWorkflowIds(process.env.WORKFLOW_ON_TASK_RECEIVED),
+    onMoved: parseWorkflowIds(process.env.WORKFLOW_ON_TASK_MOVED),
+  });
 
   const delivery = process.env.DELIVERY_ENABLED === "1" ? new ScriptDelivery(cwd()) : undefined;
   const offDelivery = subscribeDelivery(bus, delivery);

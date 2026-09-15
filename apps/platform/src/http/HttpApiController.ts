@@ -6,6 +6,7 @@ import type { IPipelineStateStore } from "../core/pipeline.ts";
 import type { ModuleAction, ModuleDomain } from "../core/types.ts";
 import type { IWorkflowRegistry } from "../core/workflows.ts";
 import type { WorkflowDirLoader } from "../impl/WorkflowDirLoader.ts";
+import { withMove } from "../impl/TaskWatcher.ts";
 import { WORKFLOW_PROMPT } from "../impl/OpencodeAgentExecutor.ts";
 import { slugify } from "../impl/slug.ts";
 
@@ -182,6 +183,9 @@ export class HttpApiController {
     }
 
     const hookIngest = /^\/hooks\/([^/]+)$/.exec(url.pathname);
+    if (hookIngest && hookIngest[1] && req.method === "HEAD") {
+      return Response.json(null, { status: 200 });
+    }
     if (hookIngest && hookIngest[1] && req.method === "POST") {
       return this.handleHookIngest(hookIngest[1], req);
     }
@@ -333,8 +337,8 @@ export class HttpApiController {
       if (!source) {
         return Response.json({ ok: false, error: "hook требует source" }, { status: 400 });
       }
-      if (provider !== "github" && provider !== "generic") {
-        return Response.json({ ok: false, error: 'provider должен быть "github" | "generic"' }, { status: 400 });
+      if (provider !== "github" && provider !== "generic" && provider !== "trello") {
+        return Response.json({ ok: false, error: 'provider должен быть "github" | "generic" | "trello"' }, { status: 400 });
       }
       const workflow = typeof body.workflow === "string" ? body.workflow.trim() : undefined;
       if (workflow && !this.workflows?.resolve(workflow)) {
@@ -458,6 +462,19 @@ export class HttpApiController {
     if (!filtered.accepted) {
       this.bus.publish({ type: "entrypoint.ignored", hookId: id, reason: "filter_mismatch", detail: filtered.reason });
       return Response.json({ ok: true, received: false, started: false });
+    }
+
+    // Trello: события публикуются в шину — реакторы (task.received/task.moved)
+    // и модульный матчер работают так же, как при поллинге Trello-источника.
+    if (filtered.kind === "moved") {
+      const fromList = filtered.fromList ?? "";
+      const toList = filtered.toList ?? "";
+      this.bus.publish({ type: "task.moved", task: withMove(filtered.task, fromList, toList), fromList, toList });
+      return Response.json({ ok: true, received: true, started: false, event: "task.moved" });
+    }
+    if (binding.provider === "trello") {
+      this.bus.publish({ type: "task.received", task: filtered.task });
+      return Response.json({ ok: true, received: true, started: false, event: "task.received" });
     }
 
     const handle = this.workflows?.resolve(binding.workflow ?? "module");

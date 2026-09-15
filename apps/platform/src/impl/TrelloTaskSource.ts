@@ -1,5 +1,6 @@
 import type { ICommandExecutor } from "@opencode-workflow/sdk";
-import type { ITaskSource, IWorkflowTask } from "@opencode-workflow/sdk";
+import type { IWorkflowTask } from "@opencode-workflow/sdk";
+import type { IPositionedTaskSource, ITaskPosition } from "../core/moves.ts";
 
 interface TrelloCard {
   id: string;
@@ -21,7 +22,7 @@ interface TrelloList {
  * ack перемещает карточку в Done-лист. Низкий уровень — через
  * ICommandExecutor (TrelloConnector): сырого fetch здесь нет.
  */
-export class TrelloTaskSource implements ITaskSource {
+export class TrelloTaskSource implements IPositionedTaskSource {
   readonly id = "trello";
 
   constructor(
@@ -57,6 +58,28 @@ export class TrelloTaskSource implements ITaskSource {
     await this.call(`cards.move`, { cardId: task.externalId, idList: doneListId });
   }
 
+  /**
+   * Карта «карточка → лист» по всем открытым листам доски (кроме Done —
+   * ack-переезды туда не считаем перемещениями). Для детекции task.moved.
+   */
+  async fetchPositions(limit = 500): Promise<ITaskPosition[]> {
+    const board = await this.board();
+    const lists = await this.call<TrelloList[]>("lists.list", { boardId: board.id });
+    const tracked = (lists ?? []).filter((l) => l.name !== this.config.doneList);
+    const positions: ITaskPosition[] = [];
+    for (const list of tracked) {
+      const cards = await this.call<TrelloCard[]>("cards.list", {
+        listId: list.id,
+        filter: "open",
+        limit: String(limit),
+        attachments: "true",
+        fields: "id,name,desc,url,idList,labels,attachments",
+      });
+      for (const card of cards ?? []) positions.push({ task: this.toTask(card), list: list.name });
+    }
+    return positions;
+  }
+
   private toTask(card: TrelloCard): IWorkflowTask {
     return {
       externalId: card.id,
@@ -75,13 +98,18 @@ export class TrelloTaskSource implements ITaskSource {
   }
 
   private async listId(listName: string): Promise<string> {
-    const boards = await this.call<Array<{ id: string; name?: string }>>("boards.list", {});
-    let board = (boards ?? []).find((b) => b.name === this.config.board) ?? (boards ?? [])[0];
-    if (!board) throw new Error(`доска "${this.config.board}" не найдена`);
+    const board = await this.board();
     const lists = await this.call<TrelloList[]>("lists.list", { boardId: board.id });
     const found = (lists ?? []).find((l) => l.name === listName);
     if (!found) throw new Error(`лист "${listName}" не найден на доске "${board.name}"`);
     return found.id;
+  }
+
+  private async board(): Promise<{ id: string; name?: string }> {
+    const boards = await this.call<Array<{ id: string; name?: string }>>("boards.list", {});
+    const board = (boards ?? []).find((b) => b.name === this.config.board) ?? (boards ?? [])[0];
+    if (!board) throw new Error(`доска "${this.config.board}" не найдена`);
+    return board;
   }
 
   private async call<T>(op: string, params: Record<string, unknown>): Promise<T | null> {

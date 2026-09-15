@@ -30,6 +30,6 @@ export class GenericWebhookProvider implements IWebhookProvider {
       createdAt: partial.createdAt ?? new Date().toISOString(),
       meta: Object.keys(meta).length ? meta : undefined,
     };
-    return { accepted: true, task };
+    return { accepted: true, task, kind: "received" };
   }
 }

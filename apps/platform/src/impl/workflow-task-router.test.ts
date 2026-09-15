@@ -52,18 +52,42 @@ describe("WorkflowTaskRouter", () => {
     const bus = new InMemoryEventBus();
     const started: Array<{ id: string; task: IWorkflowTask }> = [];
     const registry = fakeRegistry([fakeHandle("trello-notify", started), fakeHandle("other", started)]);
-    const router = new WorkflowTaskRouter(bus, registry, parseWorkflowIds("trello-notify"));
+    const router = new WorkflowTaskRouter(bus, registry, { onReceived: parseWorkflowIds("trello-notify") });
     bus.publish({ type: "task.received", task });
     router.close();
     expect(started.map((s) => s.id)).toEqual(["trello-notify"]);
     expect(started[0]!.task.title).toBe(task.title);
   });
 
+  test("запускает workflow на task.moved и передаёт meta.move", () => {
+    const bus = new InMemoryEventBus();
+    const started: Array<{ id: string; task: IWorkflowTask }> = [];
+    const registry = fakeRegistry([fakeHandle("trello-move-notify", started)]);
+    const router = new WorkflowTaskRouter(bus, registry, {
+      onReceived: [],
+      onMoved: parseWorkflowIds("trello-move-notify"),
+    });
+    bus.publish({ type: "task.moved", task, fromList: "Backlog", toList: "This Week" });
+    router.close();
+    expect(started.map((s) => s.id)).toEqual(["trello-move-notify"]);
+    expect(started[0]!.task.meta).toEqual({ move: { fromList: "Backlog", toList: "This Week" } });
+  });
+
+  test("сообщения о перемещении не триггерят реакторы на task.received", () => {
+    const bus = new InMemoryEventBus();
+    const started: Array<{ id: string; task: IWorkflowTask }> = [];
+    const registry = fakeRegistry([fakeHandle("trello-notify", started)]);
+    const router = new WorkflowTaskRouter(bus, registry, { onReceived: parseWorkflowIds("trello-notify") });
+    bus.publish({ type: "task.moved", task, fromList: "Backlog", toList: "This Week" });
+    router.close();
+    expect(started).toHaveLength(0);
+  });
+
   test("игнорирует чужие события и не роняет платформу", () => {
     const bus = new InMemoryEventBus();
     const started: Array<{ id: string; task: IWorkflowTask }> = [];
     const registry = fakeRegistry([fakeHandle("trello-notify", started)]);
-    const router = new WorkflowTaskRouter(bus, registry, parseWorkflowIds("trello-notify"));
+    const router = new WorkflowTaskRouter(bus, registry, { onReceived: parseWorkflowIds("trello-notify") });
     bus.publish({ type: "pipeline.done", runId: "run-x" } satisfies WorkflowEvent);
     router.close();
     expect(started).toHaveLength(0);

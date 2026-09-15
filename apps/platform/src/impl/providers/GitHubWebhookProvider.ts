@@ -68,6 +68,6 @@ export class GitHubWebhookProvider implements IWebhookProvider {
         ...(binding.domain ? { domain: binding.domain } : {}),
       },
     };
-    return { accepted: true, task };
+    return { accepted: true, task, kind: "received" };
   }
 }

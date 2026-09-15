@@ -18,6 +18,7 @@ export type EntryPointIgnoreReason =
 
 export type WorkflowEvent =
   | { type: "task.received"; task: IWorkflowTask }
+  | { type: "task.moved"; task: IWorkflowTask; fromList: string; toList: string }
   | {
       type: "pipeline.started";
       runId: string;
