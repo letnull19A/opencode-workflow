@@ -95,6 +95,34 @@ it. Prerequisites from the pack `.opencode/` apply (see
 | `DELIVERY_PUSH` | `0` | `1` → also push to the remote after committing |
 | `PROJECT_DIR` | cwd | Repository the delivery commits into |
 
+## Task reactors (workflow → events)
+
+A custom workflow can react to incoming tasks (e.g. new Trello cards from the
+polling source): set a comma-separated list of workflow ids and the platform
+starts those workflows on every `task.received` (the built-in module matcher
+keeps working in parallel).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WORKFLOW_ON_TASK_RECEIVED` | (empty) | CSV-список id workflow-реакторов, запускаемых на каждый `task.received` (например `trello-notify`) |
+
+Example — "новый Trello-тикет → Telegram":
+
+```bash
+cd apps/platform
+bun run build-workflow                      # trello-notify артефакт
+TRELLO_API_KEY=... TRELLO_TOKEN=... \
+TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=@workhub \
+WORKFLOW_ON_TASK_RECEIVED=trello-notify \
+TASK_SOURCE=trello \
+bun run watch                               # Trello → task.received
+bun run webhook                             # платформа (реестр + роутер)
+```
+
+The `TelegramConnector` (service `telegram`) sends via Bot API —
+`TELEGRAM_BOT_TOKEN` required, `TELEGRAM_CHAT_ID` is the default chat
+(overridable per call with `chat_id`).
+
 ## Webhook bindings & secrets
 
 Webhook bindings are stored under `STATE_DIR/hooks/`. A binding may pin an

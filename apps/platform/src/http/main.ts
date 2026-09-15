@@ -15,7 +15,9 @@ import { WorkflowDirLoader } from "../impl/WorkflowDirLoader.ts";
 import { CommandExecutor } from "../impl/CommandExecutor.ts";
 import { OpencodeConnector } from "../impl/OpencodeConnector.ts";
 import { TrelloConnector } from "../impl/TrelloConnector.ts";
+import { TelegramConnector } from "../impl/TelegramConnector.ts";
 import { GitHubConnector } from "../impl/GitHubConnector.ts";
+import { WorkflowTaskRouter, parseWorkflowIds } from "../impl/WorkflowTaskRouter.ts";
 import { GitHubWebhookProvider } from "../impl/providers/GitHubWebhookProvider.ts";
 import { GenericWebhookProvider } from "../impl/providers/GenericWebhookProvider.ts";
 import { ScriptDelivery } from "../impl/ScriptDelivery.ts";
@@ -49,6 +51,7 @@ async function main(): Promise<void> {
   const commands = new CommandExecutor([
     new OpencodeConnector(executor),
     new TrelloConnector(),
+    new TelegramConnector(),
     new GitHubConnector(),
   ]);
 
@@ -58,6 +61,8 @@ async function main(): Promise<void> {
   const workflowsDir = process.env.WORKFLOWS_DIR ?? "workflows";
   const loader = new WorkflowDirLoader(workflowsDir, workflows, { executor, commands, bus, store }, bus);
   await loader.sync();
+
+  const taskRouter = new WorkflowTaskRouter(bus, workflows, parseWorkflowIds(process.env.WORKFLOW_ON_TASK_RECEIVED));
 
   const delivery = process.env.DELIVERY_ENABLED === "1" ? new ScriptDelivery(cwd()) : undefined;
   const offDelivery = subscribeDelivery(bus, delivery);
@@ -78,6 +83,7 @@ async function main(): Promise<void> {
     console.log("shutting down webhook...");
     controller.stop();
     matcher.close();
+    taskRouter.close();
     offLog();
     offDelivery();
     await executor.close();

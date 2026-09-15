@@ -120,3 +120,49 @@ with the previously loaded code.
 - Prefer `session()` over raw `rt.executor` calls when you want cancellation to
   flow from `stop`.
 - Publish structured progress via `rt.bus.publish({ type: "pipeline.phase", runId, phase })`.
+
+## Task reactor: Trello → Telegram
+
+A workflow can **react to incoming tasks** (`task.received`, i.e. new Trello
+cards from the polling source, HTTP `/task`, ...) without touching the module
+matcher: set `WORKFLOW_ON_TASK_RECEIVED=<id>` and the platform starts that
+workflow for every task. The matcher keeps running in parallel, so a notifier
+doesn't replace module development.
+
+`workflows-src/trello-notify.ts` (source) → `build-workflow` → artifact:
+
+```ts
+import { defineWorkflow, graph, node } from "@opencode-workflow/sdk";
+import type { CommandResult, IWorkflowRuntime, IWorkflowTask } from "@opencode-workflow/sdk";
+
+interface NotifyData { task: IWorkflowTask; send: CommandResult; }
+
+export default defineWorkflow<NotifyData>({
+  id: "trello-notify",
+  label: "Trello → Telegram",
+  phases: ["notify"],
+  seed: (task) => ({ task, send: { ok: false, error: "not sent" } }),
+  create: (rt) =>
+    graph("notify", [
+      node("notify", {
+        run: async (ctx) => {
+          const send = await rt.commands.execute({
+            service: "telegram",
+            op: "messages.send",
+            params: { text: `Новая задача: ${ctx.data.task.title}` },
+          });
+          if (!send.ok) throw new Error(`telegram send failed: ${send.error}`);
+          return ctx;
+        },
+      }),
+    ]),
+});
+```
+
+Platform support (already wired in `main.ts`):
+
+- `TelegramConnector` — service `telegram`, op `messages.send`
+  (`text`, optional `chat_id`), secrets `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`.
+- `WorkflowTaskRouter` — subscribes `task.received` and starts every workflow
+  id in `WORKFLOW_ON_TASK_RECEIVED`; logs and keeps going if an id isn't
+  registered.
