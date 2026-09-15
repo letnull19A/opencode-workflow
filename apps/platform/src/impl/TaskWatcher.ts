@@ -1,7 +1,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { IEventBus } from "../core/events.ts";
+import type { ILogger } from "../core/logging.ts";
 import type { ITaskSource } from "@opencode-workflow/sdk";
+import { makeLogger } from "./logger.ts";
 
 export interface TaskWatcherOptions {
   pollIntervalMs?: number;
@@ -18,13 +20,16 @@ export class TaskWatcher {
   private readonly stateDir = process.env.STATE_DIR
     ?? join(process.env.HOME ?? ".", ".local", "state", "opencode-workflow");
   private readonly processedFile: string;
+  private readonly log: ILogger;
 
   constructor(
     private readonly source: ITaskSource,
     private readonly bus: IEventBus,
-    options: TaskWatcherOptions = {}
+    options: TaskWatcherOptions = {},
+    log: ILogger = makeLogger("watch")
   ) {
     this.processedFile = options.processedFile ?? join(this.stateDir, "processed.json");
+    this.log = log;
   }
 
   async start(): Promise<void> {
@@ -45,13 +50,16 @@ export class TaskWatcher {
   private async pollOnce(): Promise<void> {
     const processed = await this.loadProcessed();
     const tasks = await this.source.fetchNewTasks();
+    let fresh = 0;
     for (const task of tasks) {
       if (processed.has(task.externalId)) continue;
+      fresh += 1;
       this.bus.publish({ type: "task.received", task });
       await this.source.ackTask(task);
       processed.add(task.externalId);
     }
     await this.saveProcessed(processed);
+    this.log.info(`poll ${this.source.id}: ${fresh} new, ${processed.size} processed`);
   }
 
   private async loadProcessed(): Promise<Set<string>> {

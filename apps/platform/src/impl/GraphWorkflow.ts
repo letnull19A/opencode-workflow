@@ -7,10 +7,12 @@ import type {
 } from "@opencode-workflow/sdk";
 import type { IEventBus } from "../core/events.ts";
 import type { IPipelineStateStore } from "../core/pipeline.ts";
+import type { ILogger } from "../core/logging.ts";
 import type { IWorkflowHandle } from "../core/workflows.ts";
 import { MapNodeContext } from "../engine/MapNodeContext.ts";
 import { NodeGraphBuilder } from "../engine/NodeGraphBuilder.ts";
 import { DepthFirstNodeRunner } from "../engine/DepthFirstNodeRunner.ts";
+import { makeLogger } from "./logger.ts";
 
 export interface GraphWorkflowServices {
   executor: IAgentExecutor;
@@ -30,15 +32,19 @@ export class GraphWorkflow<TData = Record<string, unknown>> implements IWorkflow
   readonly label: string;
   readonly phases?: readonly string[];
   private readonly running = new Map<string, AbortController>();
-  private readonly runner = new DepthFirstNodeRunner();
+  private readonly runner: DepthFirstNodeRunner;
+  private readonly log: ILogger;
 
   constructor(
     private readonly def: IWorkflowDefinition<TData>,
-    private readonly services: GraphWorkflowServices
+    private readonly services: GraphWorkflowServices,
+    log: ILogger = makeLogger("workflow")
   ) {
     this.id = def.id;
     this.label = def.label;
     this.phases = def.phases;
+    this.log = log;
+    this.runner = new DepthFirstNodeRunner(log.debug);
   }
 
   async start(task: IWorkflowTask): Promise<string> {
@@ -61,7 +67,9 @@ export class GraphWorkflow<TData = Record<string, unknown>> implements IWorkflow
 
   private async dispatch(runId: string, stopper: AbortController, task: IWorkflowTask): Promise<void> {
     const { bus } = this.services;
+    const startedAt = performance.now();
     try {
+      this.log.info(`${this.id} run ${runId} started (task "${task.title}")`);
       const rt: IWorkflowRuntime = {
         executor: this.services.executor,
         commands: this.services.commands,
@@ -74,15 +82,18 @@ export class GraphWorkflow<TData = Record<string, unknown>> implements IWorkflow
       await this.runner.run(entry, ctx);
       await this.save(task, runId, "done");
       bus.publish({ type: "pipeline.done", runId });
+      this.log.info(`${this.id} run ${runId} done (${Math.round(performance.now() - startedAt)}ms)`);
     } catch (err) {
       if (stopper.signal.aborted) {
         await this.save(task, runId, "cancelled");
         bus.publish({ type: "pipeline.cancelled", runId });
+        this.log.info(`${this.id} run ${runId} cancelled by signal`);
         return;
       }
       const error = String(err);
       await this.save(task, runId, "failed", error);
       bus.publish({ type: "pipeline.failed", runId, error });
+      this.log.error(`${this.id} run ${runId} failed (${Math.round(performance.now() - startedAt)}ms): ${error}`);
     } finally {
       this.running.delete(runId);
     }

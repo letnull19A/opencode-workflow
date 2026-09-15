@@ -4,8 +4,10 @@ import { pathToFileURL } from "node:url";
 import { workflowFormat, sdkVersion } from "@opencode-workflow/sdk";
 import type { IWorkflowDefinition } from "@opencode-workflow/sdk";
 import type { IEventBus } from "../core/events.ts";
+import type { ILogger } from "../core/logging.ts";
 import type { IWorkflowRegistry } from "../core/workflows.ts";
 import { GraphWorkflow, type GraphWorkflowServices } from "./GraphWorkflow.ts";
+import { makeLogger } from "./logger.ts";
 
 /** Манифест собранного workflow-артефакта: контрактный гейт до загрузки кода. */
 export interface WorkflowManifest {
@@ -31,7 +33,8 @@ export class WorkflowDirLoader {
     private readonly dir: string,
     private readonly registry: IWorkflowRegistry,
     private readonly services: GraphWorkflowServices,
-    private readonly bus: IEventBus
+    private readonly bus: IEventBus,
+    private readonly log: ILogger = makeLogger("workflows")
   ) {}
 
   /** Полный обход каталога: регистрация новых/изменённых, снятие отсутствующих. */
@@ -39,6 +42,8 @@ export class WorkflowDirLoader {
     const foundIds = new Set<string>();
     const seenDirs = new Set<string>();
     const entries = await this.readDir();
+    let registered = 0;
+    let updated = 0;
     for (const entry of entries) {
       const artifactDir = join(this.dir, entry);
       const stat = await this.stat(artifactDir);
@@ -58,11 +63,14 @@ export class WorkflowDirLoader {
       const fingerprint = await this.fingerprint(artifactDir);
       if (previous === undefined) {
         await this.load(manifest, artifactDir);
+        registered += 1;
       } else if (fingerprint > previous) {
         await this.load(manifest, artifactDir, true);
+        updated += 1;
       }
     }
     await this.removeMissing(foundIds, seenDirs);
+    this.log.info(`sync ${this.dir}: ${registered} registered, ${updated} updated, ${this.registry.list().length} total`);
   }
 
   private async fingerprint(artifactDir: string): Promise<number> {
@@ -169,7 +177,7 @@ export class WorkflowDirLoader {
   }
 
   private report(workflowId: string, error: string): void {
-    console.error(`[workflows] ${workflowId}: ${error}`);
+    this.log.error(`${workflowId}: ${error}`);
     this.bus.publish({ type: "workflow.error", workflowId, error });
   }
 }

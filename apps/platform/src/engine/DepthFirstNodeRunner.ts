@@ -5,6 +5,7 @@ import type {
   INodeRunner,
   INodeRunnerOptions,
 } from "@opencode-workflow/sdk";
+import type { LogFn } from "../core/logging.ts";
 
 const DEFAULT_MAX_VISITS = 1000;
 
@@ -13,9 +14,16 @@ const DEFAULT_MAX_VISITS = 1000;
  * направо. Condition на ноде гейтит и выполнение, и поддерево: false — нода
  * и её потомки пропускаются. Ошибка исполнителя пробрасывается наверх.
  * Циклы (например verification → tests при возврате) ограничены бюджетом
- * посещений на ноду; отмена — через ctx.signal.
+ * посещений на ноду; отмена — через ctx.signal. Опциональный debug-логгер
+ * пишет каждый проход ноды (id, длительность, ошибку).
  */
 export class DepthFirstNodeRunner implements INodeRunner {
+  private readonly debugLog: LogFn;
+
+  constructor(debugLog: LogFn = () => {}) {
+    this.debugLog = debugLog;
+  }
+
   async run<TData>(
     entry: INode<TData>,
     ctx: INodeContext<TData>,
@@ -53,10 +61,19 @@ export class DepthFirstNodeRunner implements INodeRunner {
 
     if (node.condition) {
       const active = await node.condition(ctx);
+      this.debugLog(`node "${node.id}" condition → ${active ? "active" : "skip"}`);
       if (!active) return;
     }
 
-    ctx = await node.executor.run(ctx);
+    const startedAt = performance.now();
+    this.debugLog(`node "${node.id}" start`);
+    try {
+      ctx = await node.executor.run(ctx);
+    } catch (err) {
+      this.debugLog(`node "${node.id}" error: ${String(err)}`);
+      throw err;
+    }
+    this.debugLog(`node "${node.id}" done (${Math.round(performance.now() - startedAt)}ms)`);
     for (const next of node.outgoing) {
       await this.visit(next, ctx, visits, budget);
     }

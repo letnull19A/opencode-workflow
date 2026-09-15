@@ -116,6 +116,9 @@ repository — pass them only as environment variables. In Docker use
 
 ## Notes
 
+- `LOG_LEVEL`: `silent` | `error` | `warn` | `info` (default) | `debug`. Controls
+  the console logger used by watch, webhook and workflow runs: `info` shows
+  poll/run/command outcomes, `debug` adds per-node traces in the graph engine.
 - In attach mode (`OPENCODE_SERVER_URL`) the running server's own config and
   model apply; `permission: allow` and `reasoningEffort: minimal` are only
   applied to a **self-started** server.
