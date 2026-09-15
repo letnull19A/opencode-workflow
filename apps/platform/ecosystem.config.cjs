@@ -23,6 +23,20 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss.SSS",
     },
     {
+      // Туннелем владеет pm2 (одна живая копия ngrok :8787 → public URL).
+      // Никто больше ngrok не поднимает — register.sh берёт publicUrl из API :4040.
+      name: "tunnel",
+      cwd: __dirname,
+      script: "scripts/trello-webhook/tunnel.sh",
+      interpreter: "bash",
+      args: [],
+      exec_mode: "fork",
+      watch: false,
+      max_restarts: 10,
+      restart_delay: 3000,
+      log_date_format: "YYYY-MM-DD HH:mm:ss.SSS",
+    },
+    {
       name: "web",
       cwd: webCwd,
       script: "node_modules/vite/bin/vite.js",
