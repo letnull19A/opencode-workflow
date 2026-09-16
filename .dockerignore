@@ -11,3 +11,8 @@ apps/platform/docs/.vitepress/
 apps/web/dist/
 apps/platform/src/impl/ModuleWorkflowStarter.ts
 apps/platform/src/impl/WebhookEntrypointNode.ts
+# pm2/туннель — только локальная дев-схема; в проде PUBLIC_URL задаётся вручную.
+apps/platform/ecosystem.config.cjs
+apps/platform/scripts/trello-webhook/tunnel.sh
+# opencode server — только локальная дев-схема (pm2-app); в проде сервер удалённый.
+apps/platform/scripts/opencode-server/server.sh

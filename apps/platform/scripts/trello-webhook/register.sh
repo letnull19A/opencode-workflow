@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Регистрация Trello webhook на локальную платформу через ngrok-туннель.
+# Регистрация Trello webhook на платформу по публичному URL.
+# Прод: PUBLIC_URL задаётся вручную (env) — ngrok/pm2 не нужны.
+# Локальная дев-схема: pm2-туннель (ngrok), public_url берётся из API :4040.
 # Env: TRELLO_API_KEY, TRELLO_TOKEN, TRELLO_BOARD (+ PORT, PUBLIC_URL, WORKFLOWS_DIR).
 # Создаёт binding provider=trello, регистрирует webhook updateCard/createCard
 # у Trello и сохраняет состояние в $STATE_DIR/trello-webhook.json.
@@ -48,15 +50,14 @@ for b in json.load(sys.stdin):
 [ -n "$BOARD_ID" ] || { echo "Доска '$TRELLO_BOARD' не найдена." >&2; exit 1; }
 echo "[2] доска '$TRELLO_BOARD' = $BOARD_ID"
 
-# ── 3. Публичный URL (переиспользуем живой туннель из state) ─────────
+# ── 3. Публичный URL: env (прод) → state → дев-туннель :4040 ─────────
 read_state
 TUNNEL_OK=""
-TUNNEL_OK=""
-# Туннелем владеет pm2 (app 'tunnel' в ecosystem.config.cjs). Свой ngrok НЕ поднимаем —
-# берём живой public_url из его API :4040 и сохраняем в state (идемпотентность).
+# Приоритет: PUBLIC_URL из env (прод, ручной режим) → живой публичный URL из
+# :4040 API локального туннеля (только дев-схема). Идемпотентно, state-файл.
 if [ -n "${PUBLIC_URL:-}" ] && curl -sf "${PUBLIC_URL%/}/health" >/dev/null 2>&1; then
   TUNNEL_OK="yes"
-  echo "[3] туннель жив: $PUBLIC_URL"
+  echo "[3] public url жив: $PUBLIC_URL"
 fi
 if [ -z "$TUNNEL_OK" ]; then
   PUBLIC_URL="$(curl -sf http://127.0.0.1:4040/api/tunnels 2>/dev/null \
@@ -67,14 +68,14 @@ try:
 except Exception: print("")' || true)"
   if [ -n "$PUBLIC_URL" ] && curl -sf "${PUBLIC_URL%/}/health" >/dev/null 2>&1; then
     TUNNEL_OK="yes"
-    echo "[3] туннель pm2 жив: $PUBLIC_URL"
+    echo "[3] дев-туннель pm2 жив: $PUBLIC_URL"
   else
-    echo "Туннеля нет. Запусти сначала: cd apps/platform && pm2 start ecosystem.config.cjs && pm2 save — затем повтори этот скрипт." >&2
+    echo "Нет живого публичного URL. Прод: задайте PUBLIC_URL (env). Дев: cd apps/platform && pm2 start ecosystem.config.cjs && pm2 save — затем повтори этот скрипт." >&2
     exit 1
   fi
 fi
 
-CALLBACK_URL="${PUBLIC_URL:-${PUBLIC_URL:-}}/hooks"
+CALLBACK_URL="${PUBLIC_URL:-}/hooks"
 echo "[4] callback: $CALLBACK_URL"
 
 # ── 5. Binding provider=trello (переиспользуем существующий) ──────────

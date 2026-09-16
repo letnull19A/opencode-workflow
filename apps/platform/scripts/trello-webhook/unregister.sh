@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Отмена Trello webhook: удаляет webhook у Trello, binding в платформе
-# и гасит ngrok-туннель. Использование: ./unregister.sh
+# Отмена Trello webhook: удаляет webhook у Trello и binding в платформе.
+# ngrok-процесс (дев-схема) гасится только если pid есть в state; в проде
+# туннеля нет, а в дев-схеме им владеет pm2 — блок почти всегда пустой.
+# Использование: ./unregister.sh
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

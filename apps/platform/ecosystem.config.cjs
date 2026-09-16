@@ -1,10 +1,28 @@
-/** PM2 ecosystem — dev-подъём приложения: webhook + web-dashboard. */
+/** PM2 ecosystem — dev-подъём приложения: webhook + web-dashboard + opencode server. */
 const path = require("node:path");
 
 const webCwd = path.resolve(__dirname, "..", "web");
 
 module.exports = {
   apps: [
+    {
+      // Headless opencode server для демо (только локально; в проде сервер
+      // удалённый, платформа цепляется по OPENCODE_SERVER_URL). Рабочая
+      // директория — песочница opencode-workspace, чтобы не засорять репо.
+      name: "opencode",
+      cwd: path.resolve(__dirname, "opencode-workspace"),
+      script: "../scripts/opencode-server/server.sh",
+      interpreter: "bash",
+      args: [],
+      exec_mode: "fork",
+      watch: false,
+      max_restarts: 10,
+      restart_delay: 3000,
+      env: {
+        OPENCODE_PORT: "4096",
+      },
+      log_date_format: "YYYY-MM-DD HH:mm:ss.SSS",
+    },
     {
       name: "webhook",
       cwd: __dirname,
@@ -19,6 +37,7 @@ module.exports = {
       env: {
         NODE_ENV: "development",
         HOME: process.env.HOME,
+        OPENCODE_SERVER_URL: "http://127.0.0.1:4096",
       },
       log_date_format: "YYYY-MM-DD HH:mm:ss.SSS",
     },
