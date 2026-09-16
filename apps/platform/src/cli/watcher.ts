@@ -8,6 +8,7 @@ import { TelegramConnector } from "../impl/TelegramConnector.ts";
 import { OpencodeConnector } from "../impl/OpencodeConnector.ts";
 import { GitHubConnector } from "../impl/GitHubConnector.ts";
 import { OpencodeAgentExecutor } from "../impl/OpencodeAgentExecutor.ts";
+import { OfflineAgentExecutor } from "../impl/OfflineAgentExecutor.ts";
 import { FilePipelineStateStore } from "../impl/FilePipelineStateStore.ts";
 import { ConfigWorkerRegistry } from "../impl/ConfigWorkerRegistry.ts";
 import { GeneralModuleWorker } from "../impl/GeneralModuleWorker.ts";
@@ -25,7 +26,10 @@ import type { ITaskSource } from "@opencode-workflow/sdk";
 /** CLI: поллинг источника задач → задача уходит в пайплайн (через матчер) и в workflow-реакторы. */
 async function main(): Promise<void> {
   const bus = new InMemoryEventBus();
-  const executor = await OpencodeAgentExecutor.create();
+  const executor = await OpencodeAgentExecutor.create().catch((err) => {
+    console.error(`opencode недоступен, старт деградированно: ${String(err)}`);
+    return new OfflineAgentExecutor(err);
+  });
   const vault = await FileVault.open();
   const commands = new CommandExecutor([
     new OpencodeConnector(executor),

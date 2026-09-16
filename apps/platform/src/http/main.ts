@@ -1,5 +1,6 @@
 import { HttpApiController } from "./HttpApiController.ts";
 import { OpencodeAgentExecutor } from "../impl/OpencodeAgentExecutor.ts";
+import { OfflineAgentExecutor } from "../impl/OfflineAgentExecutor.ts";
 import { InMemoryEventBus } from "../impl/InMemoryEventBus.ts";
 import { FilePipelineStateStore } from "../impl/FilePipelineStateStore.ts";
 import { FileWebhookStore } from "../impl/FileWebhookStore.ts";
@@ -37,7 +38,10 @@ async function main(): Promise<void> {
     }
   });
 
-  const executor = await OpencodeAgentExecutor.create();
+  const executor = await OpencodeAgentExecutor.create().catch((err) => {
+    console.error(`opencode недоступен, старт деградированно: ${String(err)}`);
+    return new OfflineAgentExecutor(err);
+  });
   const store = new FilePipelineStateStore();
   const vault = await FileVault.open();
   const registry = new ConfigWorkerRegistry([new GeneralModuleWorker(), new NestJSModuleWorker(), new DotNetModuleWorker()]);

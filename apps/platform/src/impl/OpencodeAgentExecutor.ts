@@ -1,6 +1,11 @@
-import { createOpencodeClient, createOpencodeServer } from "@opencode-ai/sdk";
+import { createOpencodeClient } from "@opencode-ai/sdk";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { IAgentExecutor, PromptSessionResult } from "@opencode-workflow/sdk";
+import {
+  OpencodeConnectionError,
+  OpencodeSessionCreateError,
+  OpencodeSessionPromptError,
+} from "@opencode-workflow/sdk";
 
 export const WORKFLOW_PROMPT = "Test";
 export const WORKFLOW_TITLE = "Test workflow";
@@ -13,76 +18,48 @@ function serverAuthHeaders(): Record<string, string> | undefined {
   return { Authorization: `Basic ${token}` };
 }
 
-/** Исполнитель агентов: attach к бегущему серверу или self-start + авто-апрув permissions. */
+/** Исполнитель агентов: только attach к существующему серверу.
+ * Нет соединения — OpencodeConnectionError (UNIX: сервер сами не поднимаем,
+ * для демо он живёт отдельным pm2-app `opencode`). */
 export class OpencodeAgentExecutor implements IAgentExecutor {
   readonly id = "opencode";
 
   private constructor(
     private readonly client: OpencodeClient,
-    private readonly eventsAbort: AbortController,
-    private readonly server?: { url: string; close(): void }
+    private readonly eventsAbort: AbortController
   ) {}
 
   static async create(): Promise<OpencodeAgentExecutor> {
-    const serverUrl = process.env.OPENCODE_SERVER_URL;
+    const serverUrl = process.env.OPENCODE_SERVER_URL ?? "";
+    if (!serverUrl) throw new OpencodeConnectionError("");
     const directory = process.env.OPENCODE_DIRECTORY;
     const headers = serverAuthHeaders();
-    const clientOpts = {
+    const client = createOpencodeClient({
+      baseUrl: serverUrl,
       ...(headers ? { headers } : {}),
       ...(directory ? { directory } : {}),
-    };
-    let client: OpencodeClient | null = null;
-    let server: { url: string; close(): void } | null = null;
-
-    if (serverUrl) {
-      const attached = createOpencodeClient({ baseUrl: serverUrl, ...clientOpts });
-      try {
-        const probe = await attached.app.agents();
-        if (probe.error) {
-          throw new Error(`server check failed, HTTP ${probe.response?.status}`);
-        }
-        client = attached;
-      } catch (err) {
-        console.warn(`cannot reach ${serverUrl}, starting own server: ${String(err)}`);
+    });
+    try {
+      const probe = await client.app.agents();
+      if (probe.error) {
+        throw new Error(`server check failed, HTTP ${probe.response?.status}`);
       }
-    }
-
-    if (!client) {
-      server = await createOpencodeServer({
-        port: 0,
-        config: {
-          permission: {
-            edit: "allow",
-            bash: "allow",
-            webfetch: "allow",
-            doom_loop: "allow",
-            external_directory: "allow",
-          },
-          provider: {
-            "opencode-go": {
-              models: {
-                "muse-spark-1.3-contributor": {
-                  options: { reasoningEffort: "minimal" },
-                },
-              },
-            },
-          },
-        },
-      });
-      client = createOpencodeClient({ baseUrl: server.url, ...clientOpts });
+    } catch (err) {
+      if (err instanceof OpencodeConnectionError) throw err;
+      throw new OpencodeConnectionError(serverUrl, err);
     }
 
     const eventsAbort = new AbortController();
     const eventsLoop = (async () => {
       try {
-        const { stream } = await client!.global.event({ signal: eventsAbort.signal });
+        const { stream } = await client.global.event({ signal: eventsAbort.signal });
         for await (const evt of stream) {
           try {
             const payload = evt?.payload;
             if (payload?.type === "permission.updated") {
               const p = payload.properties;
               if (p?.sessionID && p?.id) {
-                await client!.postSessionIdPermissionsPermissionId({
+                await client.postSessionIdPermissionsPermissionId({
                   path: { id: p.sessionID, permissionID: p.id },
                   body: { response: "always" },
                 });
@@ -95,7 +72,7 @@ export class OpencodeAgentExecutor implements IAgentExecutor {
     })();
     eventsLoop.catch(() => {});
 
-    return new OpencodeAgentExecutor(client, eventsAbort, server ?? undefined);
+    return new OpencodeAgentExecutor(client, eventsAbort);
   }
 
   async listAgents(): Promise<string[]> {
@@ -103,29 +80,51 @@ export class OpencodeAgentExecutor implements IAgentExecutor {
     return (res.data ?? []).map((a) => a.name);
   }
 
+  async createSession(title?: string): Promise<string> {
+    const session = await this.client.session.create({
+      body: { title: title ?? WORKFLOW_TITLE },
+    });
+    const sessionId = session.data?.id;
+    if (!sessionId) throw new OpencodeSessionCreateError(title ?? WORKFLOW_TITLE);
+    return sessionId;
+  }
+
   async runSession(opts: {
     prompt: string;
     agent?: string;
     sessionTitle?: string;
+    sessionId?: string;
     signal?: AbortSignal;
   }): Promise<PromptSessionResult> {
     if (opts.signal?.aborted) throw new Error("run stopped");
-    const session = await this.client.session.create({
-      body: { title: opts.sessionTitle ?? WORKFLOW_TITLE },
-    });
-    const sessionId = session.data?.id;
-    if (!sessionId) throw new Error("session not created");
+    let sessionId = opts.sessionId;
+    if (!sessionId) {
+      try {
+        sessionId = await this.createSession(opts.sessionTitle);
+      } catch (err) {
+        if (err instanceof OpencodeSessionCreateError) throw err;
+        throw new OpencodeSessionCreateError(opts.sessionTitle ?? WORKFLOW_TITLE, err);
+      }
+    }
 
-    await this.client.session.promptAsync({
-      path: { id: sessionId },
-      body: {
-        ...(opts.agent ? { agent: opts.agent } : {}),
-        parts: [{ type: "text", text: opts.prompt }],
-      },
-    });
+    try {
+      await this.client.session.promptAsync({
+        path: { id: sessionId },
+        body: {
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          parts: [{ type: "text", text: opts.prompt }],
+        },
+      });
+    } catch (err) {
+      throw new OpencodeSessionPromptError(sessionId, "промпт не принят сервером", err);
+    }
 
-    const text = await this.waitForCompletion(sessionId, opts.signal);
-    return { sessionId, text };
+    try {
+      const text = await this.waitForCompletion(sessionId, opts.signal);
+      return { sessionId, text };
+    } catch (err) {
+      throw new OpencodeSessionPromptError(sessionId, "ответ не дождались", err);
+    }
   }
 
   /**
@@ -189,6 +188,5 @@ export class OpencodeAgentExecutor implements IAgentExecutor {
 
   async close(): Promise<void> {
     this.eventsAbort.abort();
-    this.server?.close();
   }
 }
