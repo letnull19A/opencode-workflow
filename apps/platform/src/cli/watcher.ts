@@ -17,6 +17,8 @@ import { ModulePipeline } from "../impl/ModulePipeline.ts";
 import { ModuleMatcher } from "../impl/ModuleMatcher.ts";
 import { WorkflowRegistry } from "../impl/WorkflowRegistry.ts";
 import { WorkflowDirLoader } from "../impl/WorkflowDirLoader.ts";
+import { FileVault } from "../impl/FileVault.ts";
+import { VaultConnector } from "../impl/VaultConnector.ts";
 import { WorkflowTaskRouter, parseWorkflowIds } from "../impl/WorkflowTaskRouter.ts";
 import type { ITaskSource } from "@opencode-workflow/sdk";
 
@@ -24,11 +26,13 @@ import type { ITaskSource } from "@opencode-workflow/sdk";
 async function main(): Promise<void> {
   const bus = new InMemoryEventBus();
   const executor = await OpencodeAgentExecutor.create();
+  const vault = await FileVault.open();
   const commands = new CommandExecutor([
     new OpencodeConnector(executor),
     new TrelloConnector(),
     new TelegramConnector(),
     new GitHubConnector(),
+    new VaultConnector(vault),
   ]);
   const registry = new ConfigWorkerRegistry([new GeneralModuleWorker(), new NestJSModuleWorker(), new DotNetModuleWorker()]);
   const store = new FilePipelineStateStore();
@@ -37,7 +41,7 @@ async function main(): Promise<void> {
 
   const workflows = new WorkflowRegistry();
   const workflowsDir = process.env.WORKFLOWS_DIR ?? "workflows";
-  const loader = new WorkflowDirLoader(workflowsDir, workflows, { executor, commands, bus, store }, bus);
+  const loader = new WorkflowDirLoader(workflowsDir, workflows, { executor, commands, bus, store, vault }, bus);
   await loader.sync();
   const router = new WorkflowTaskRouter(bus, workflows, {
     onReceived: parseWorkflowIds(process.env.WORKFLOW_ON_TASK_RECEIVED),

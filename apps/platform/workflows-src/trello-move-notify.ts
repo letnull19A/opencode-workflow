@@ -21,7 +21,8 @@ function format(task: IWorkflowTask): string {
 /**
  * Реактор на task.moved: срабатывает по WORKFLOW_ON_TASK_MOVED от
  * поллинг-диффа TaskWatcher или Trello webhook (updateCard с listBefore/listAfter)
- * и отправляет уведомление в Telegram.
+ * и отправляет уведомление в Telegram. Токен — из vault (scope = id workflow),
+ * env TELEGRAM_BOT_TOKEN остаётся фоллбэком.
  */
 export default defineWorkflow<NotifyData>({
   id: "trello-move-notify",
@@ -34,10 +35,11 @@ export default defineWorkflow<NotifyData>({
         "notify",
         {
           run: async (ctx) => {
+            const token = await rt.vault.get("trello-move-notify", "TELEGRAM_BOT_TOKEN").catch(() => "");
             const send = await rt.commands.execute({
               service: "telegram",
               op: "messages.send",
-              params: { text: format(ctx.data.task) },
+              params: { text: format(ctx.data.task), ...(token ? { token } : {}) },
             });
             if (!send.ok) throw new Error(`telegram send failed: ${send.error}`);
             ctx.data.send = send;

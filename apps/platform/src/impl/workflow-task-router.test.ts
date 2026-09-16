@@ -143,7 +143,7 @@ describe("TelegramConnector", () => {
     delete process.env.TELEGRAM_BOT_TOKEN;
     const connector = new TelegramConnector();
     const noToken = await connector.execute({ service: "telegram", op: "messages.send", params: { text: "x" } });
-    expect(noToken).toEqual({ ok: false, error: "TELEGRAM_BOT_TOKEN не установлен в env" });
+    expect(noToken).toEqual({ ok: false, error: "токен не задан: params.token (vault) или TELEGRAM_BOT_TOKEN в env" });
 
     process.env.TELEGRAM_BOT_TOKEN = "TEST_BOT_TOKEN";
     delete process.env.TELEGRAM_CHAT_ID;
@@ -153,6 +153,19 @@ describe("TelegramConnector", () => {
     const noText = await connector.execute({ service: "telegram", op: "messages.send", params: {} });
     expect(noText.ok).toBe(false);
     expect(fetchCalls).toHaveLength(0);
+  });
+
+  test("params.token (vault) имеет приоритет над env-токеном", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "ENV_TOKEN";
+    process.env.TELEGRAM_CHAT_ID = "@workhub";
+    const connector = new TelegramConnector();
+    await connector.execute({
+      service: "telegram",
+      op: "messages.send",
+      params: { text: "x", token: "VAULT_TOKEN" },
+    });
+    const call = fetchCalls[0]!;
+    expect(call.url).toBe("https://api.telegram.org/botVAULT_TOKEN/sendMessage");
   });
 
   test("chats.list отдаёт уникальные чаты из getUpdates", async () => {

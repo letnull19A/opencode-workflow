@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Server } from "bun";
 import type { IAgentExecutor, IWebhookBinding, IWebhookProvider, IWebhookStore, IWorkflowTask } from "@opencode-workflow/sdk";
+import type { IVault } from "@opencode-workflow/sdk";
 import type { IEventBus, IEventHistory, WorkflowEvent } from "../core/events.ts";
 import type { IPipelineStateStore } from "../core/pipeline.ts";
 import type { ModuleAction, ModuleDomain } from "../core/types.ts";
@@ -42,7 +43,8 @@ export class HttpApiController {
     private readonly store?: IPipelineStateStore,
     private readonly webhooks?: HttpApiWebhooks,
     private readonly workflows?: IWorkflowRegistry,
-    private readonly loader?: WorkflowDirLoader
+    private readonly loader?: WorkflowDirLoader,
+    private readonly vault?: IVault
   ) {}
 
   start(): void {
@@ -188,6 +190,21 @@ export class HttpApiController {
     }
     if (hookIngest && hookIngest[1] && req.method === "POST") {
       return this.handleHookIngest(hookIngest[1], req);
+    }
+
+    const vaultKeys = /^\/vault\/([^/]+)$/.exec(url.pathname);
+    if (vaultKeys && vaultKeys[1] && req.method === "GET") {
+      return this.handleVaultList(req, vaultKeys[1]);
+    }
+    const vaultEntry = /^\/vault\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+    if (vaultEntry && vaultEntry[1] && vaultEntry[2] && req.method === "GET") {
+      return this.handleVaultGet(req, vaultEntry[1], vaultEntry[2]);
+    }
+    if (vaultEntry && vaultEntry[1] && vaultEntry[2] && req.method === "PUT") {
+      return this.handleVaultSet(req, vaultEntry[1], vaultEntry[2]);
+    }
+    if (vaultEntry && vaultEntry[1] && vaultEntry[2] && req.method === "DELETE") {
+      return this.handleVaultDelete(req, vaultEntry[1], vaultEntry[2]);
     }
 
     return Response.json({ ok: false, error: "not found" }, { status: 404 });
@@ -380,6 +397,71 @@ export class HttpApiController {
     }
     await this.webhooks.store.remove(id);
     return Response.json({ ok: true, removed: id });
+  }
+
+  /**
+   * Vault API: только bearer VAULT_TOKEN (501, если токен не задан —
+   * API выключено, заодно отбрасывает случайный доступ). Значения
+   * отдаёт только точечный GET; список — без значений.
+   */
+  private vaultGuard(req: Request): Response | null {
+    if (!this.vault) {
+      return Response.json({ ok: false, error: "vault not configured" }, { status: 501 });
+    }
+    const token = process.env.VAULT_TOKEN;
+    if (!token) {
+      return Response.json({ ok: false, error: "vault api disabled (set VAULT_TOKEN)" }, { status: 501 });
+    }
+    if (req.headers.get("authorization") !== `Bearer ${token}`) {
+      return Response.json({ ok: false, error: "bad token" }, { status: 401 });
+    }
+    return null;
+  }
+
+  private async handleVaultList(req: Request, workflowId: string): Promise<Response> {
+    const denied = this.vaultGuard(req);
+    if (denied) return denied;
+    try {
+      return Response.json({ ok: true, scope: workflowId, keys: await this.vault!.list(workflowId) });
+    } catch (err) {
+      return Response.json({ ok: false, error: String(err) }, { status: 400 });
+    }
+  }
+
+  private async handleVaultGet(req: Request, workflowId: string, key: string): Promise<Response> {
+    const denied = this.vaultGuard(req);
+    if (denied) return denied;
+    try {
+      return Response.json({ ok: true, scope: workflowId, key, value: await this.vault!.get(workflowId, key) });
+    } catch (err) {
+      return Response.json({ ok: false, error: String(err) }, { status: 404 });
+    }
+  }
+
+  private async handleVaultSet(req: Request, workflowId: string, key: string): Promise<Response> {
+    const denied = this.vaultGuard(req);
+    if (denied) return denied;
+    try {
+      const body = (await req.json()) as { value?: unknown };
+      if (typeof body?.value !== "string") {
+        return Response.json({ ok: false, error: "body требует { value: string }" }, { status: 400 });
+      }
+      await this.vault!.set(workflowId, key, body.value);
+      return Response.json({ ok: true, scope: workflowId, key }, { status: 201 });
+    } catch (err) {
+      return Response.json({ ok: false, error: String(err) }, { status: 400 });
+    }
+  }
+
+  private async handleVaultDelete(req: Request, workflowId: string, key: string): Promise<Response> {
+    const denied = this.vaultGuard(req);
+    if (denied) return denied;
+    try {
+      await this.vault!.delete(workflowId, key);
+      return Response.json({ ok: true, scope: workflowId, key });
+    } catch (err) {
+      return Response.json({ ok: false, error: String(err) }, { status: 404 });
+    }
   }
 
   /**

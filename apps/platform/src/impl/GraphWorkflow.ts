@@ -1,6 +1,7 @@
 import type {
   IAgentExecutor,
   ICommandExecutor,
+  IVault,
   IWorkflowDefinition,
   IWorkflowRuntime,
   IWorkflowTask,
@@ -19,6 +20,7 @@ export interface GraphWorkflowServices {
   commands: ICommandExecutor;
   bus: IEventBus;
   store: IPipelineStateStore;
+  vault: IVault;
 }
 
 /**
@@ -74,6 +76,7 @@ export class GraphWorkflow<TData = Record<string, unknown>> implements IWorkflow
         executor: this.services.executor,
         commands: this.services.commands,
         bus: this.services.bus as unknown as IWorkflowRuntime["bus"],
+        vault: this.services.vault,
       };
       const spec = await this.def.create(rt);
       const entry = new NodeGraphBuilder().build(spec.specs).nodes.get(spec.entryId);

@@ -29,10 +29,11 @@ export default defineWorkflow<NotifyData>({
         "notify",
         {
           run: async (ctx) => {
+            const token = await rt.vault.get("trello-notify", "TELEGRAM_BOT_TOKEN").catch(() => "");
             const send = await rt.commands.execute({
               service: "telegram",
               op: "messages.send",
-              params: { text: format(ctx.data.task) },
+              params: { text: format(ctx.data.task), ...(token ? { token } : {}) },
             });
             if (!send.ok) throw new Error(`telegram send failed: ${send.error}`);
             ctx.data.send = send;

@@ -8,6 +8,7 @@
     "watch": "bun src/cli/watcher.ts",
     "watch-workflows": "bun src/cli/watch-workflows.ts",
     "build-workflow": "bun src/cli/build-workflow.ts",
+    "vault": "bun src/cli/vault.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:graph": "bun test src/engine/node.test.ts",

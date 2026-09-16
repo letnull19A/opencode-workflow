@@ -3,9 +3,10 @@ import type { CommandResult, ICommand, IServiceConnector } from "@opencode-workf
 const TELEGRAM_API = "https://api.telegram.org";
 
 /**
- * Коннектор Telegram: отправка сообщений через Bot API. Секреты — только из
- * env (TELEGRAM_BOT_TOKEN), целевой чат — TELEGRAM_CHAT_ID либо params.chat_id.
- * Сырой fetch — только здесь; workflow работает через ICommandExecutor.
+ * Коннектор Telegram: отправка сообщений через Bot API. Токен — params.token
+ * (путь для значений из vault) либо env TELEGRAM_BOT_TOKEN; целевой чат —
+ * params.chat_id либо TELEGRAM_CHAT_ID. Сырой fetch — только здесь;
+ * workflow работает через ICommandExecutor.
  */
 export class TelegramConnector implements IServiceConnector {
   readonly service = "telegram";
@@ -57,8 +58,10 @@ export class TelegramConnector implements IServiceConnector {
   }
 
   private async sendMessage(params: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<CommandResult> {
-    const token = process.env.TELEGRAM_BOT_TOKEN ?? "";
-    if (!token) return { ok: false, error: "TELEGRAM_BOT_TOKEN не установлен в env" };
+    const token = typeof params.token === "string" && params.token
+      ? params.token
+      : process.env.TELEGRAM_BOT_TOKEN ?? "";
+    if (!token) return { ok: false, error: "токен не задан: params.token (vault) или TELEGRAM_BOT_TOKEN в env" };
 
     const text = typeof params.text === "string" ? params.text.trim() : "";
     if (!text) return { ok: false, error: 'для "messages.send" обязателен params.text' };
