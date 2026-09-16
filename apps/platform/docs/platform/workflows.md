@@ -197,3 +197,31 @@ Notes:
   record scope/key names only.
 - Manage secrets with `bun run vault …` or the `/vault/*` HTTP API —
   see [CLI](/reference/cli) and [HTTP API](/reference/api#vault-secrets-per-workflow).
+
+## Opencode session nodes
+
+Two nodes for multi-turn agent work, both through `rt.executor` (the only
+component allowed to touch the opencode server — no raw server calls in nodes):
+
+- `opencodeCreateSession(rt, id, { title?, outgoing?, condition? })` —
+  **создать сессию**: empty session on the server, `sessionId` into
+  `ctx.data.opencode`. Idempotent: engine revisits reuse the existing id.
+- `opencodeSessionPrompt(rt, id, { prompt, agent?, outgoing?, condition? })` —
+  **работать с сессией**: sends the prompt into that `sessionId`, waits for
+  the answer, updates `ctx.data.opencode.text`. A chain of prompts is one
+  multi-turn conversation — context accumulates server-side.
+
+`TData` must extend `SessionData` (`{ opencode?: { sessionId, text } }`).
+Without a session the prompt node throws `OpencodeSessionPromptError`;
+without a server connection — `OpencodeConnectionError` (in `cause`).
+The platform never self-starts the server: for local demo it runs as the
+pm2 app `opencode` (working dir `apps/platform/opencode-workspace/`;
+in prod it is remote, see `OPENCODE_SERVER_URL`).
+
+One-shot `session(rt, ctx, prompt, agent?)` stays as the create+prompt shortcut.
+Demo chain (`workflows-src/opencode-chain.ts`, manual start):
+
+```bash
+curl -X POST http://127.0.0.1:8787/workflow/opencode-chain \
+  -H 'content-type: application/json' -d '{"title":"night deploy"}'
+```

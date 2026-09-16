@@ -6,7 +6,7 @@ All configuration is injected through environment variables.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENCODE_SERVER_URL` | — | Attach to a running server (e.g. `http://127.0.0.1:4096`); empty or unreachable → self-start |
+| `OPENCODE_SERVER_URL` | — | URL существующего сервера (например `http://127.0.0.1:4096`); пуст или недоступен → платформа стартует деградированно, агентские вызовы бросают `OpencodeConnectionError` |
 | `OPENCODE_DIRECTORY` | — | Project directory (attach mode) |
 | `OPENCODE_SERVER_PASSWORD` | — | Password for a protected server (HTTP Basic Auth) |
 | `OPENCODE_SERVER_USERNAME` | `opencode` | Basic Auth username |
@@ -183,5 +183,7 @@ repository — pass them only as environment variables. In Docker use
   the console logger used by watch, webhook and workflow runs: `info` shows
   poll/run/command outcomes, `debug` adds per-node traces in the graph engine.
 - In attach mode (`OPENCODE_SERVER_URL`) the running server's own config and
-  model apply; `permission: allow` and `reasoningEffort: minimal` are only
-  applied to a **self-started** server.
+  model apply. The platform never starts its own opencode server (UNIX: no
+  connection is an execution error, not a self-start) — for local demo the
+  server runs as a separate pm2 app (`opencode`, see `ecosystem.config.cjs`),
+  working inside `apps/platform/opencode-workspace/`.
