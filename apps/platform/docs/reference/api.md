@@ -197,6 +197,39 @@ curl -X DELETE http://127.0.0.1:8787/hooks/hk_mre3xo6q
 # { "ok": true, "removed": "hk_mre3xo6q" }
 ```
 
+## Vault secrets (per-workflow)
+
+Isolated secret storage, one scope per workflow id (`rt.vault` in nodes).
+Changes are visible on the next run — no restart; encrypted at rest
+(AES-256-GCM, scope as AAD), values never appear in logs. All endpoints
+require `authorization: Bearer <VAULT_TOKEN>`; unset `VAULT_TOKEN` disables
+the API (`501`).
+
+```bash
+# list key names (no values)
+curl http://127.0.0.1:8787/vault/trello-move-notify -H "authorization: Bearer $VAULT_TOKEN"
+# { "ok": true, "scope": "trello-move-notify", "keys": ["TELEGRAM_BOT_TOKEN"] }
+
+# set (201)
+curl -X PUT http://127.0.0.1:8787/vault/trello-move-notify/TELEGRAM_BOT_TOKEN \
+  -H "authorization: Bearer $VAULT_TOKEN" -H 'content-type: application/json' \
+  -d '{"value":"..."}'
+# { "ok": true, "scope": "trello-move-notify", "key": "TELEGRAM_BOT_TOKEN" }
+
+# reveal (audit-logged)
+curl http://127.0.0.1:8787/vault/trello-move-notify/TELEGRAM_BOT_TOKEN \
+  -H "authorization: Bearer $VAULT_TOKEN"
+# { "ok": true, "scope": "...", "key": "...", "value": "..." }
+
+# delete
+curl -X DELETE http://127.0.0.1:8787/vault/trello-move-notify/TELEGRAM_BOT_TOKEN \
+  -H "authorization: Bearer $VAULT_TOKEN"
+# { "ok": true, "scope": "...", "key": "..." }
+```
+
+Missing scope/key → `404` with a redacted error (no values in responses).
+Alternatively manage secrets via CLI — see [CLI](/reference/cli).
+
 ## GET /stream
 
 Server-Sent-Events stream powering the web dashboard (see the

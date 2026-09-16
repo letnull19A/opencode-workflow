@@ -38,6 +38,25 @@ All configuration is injected through environment variables.
 | `TRELLO_INBOX_LIST` | `Inbox` | List to fetch tasks from |
 | `TRELLO_DONE_LIST` | `Done` | List used by `ackTask` (move card) |
 
+## Vault (per-workflow secrets)
+
+AES-256-GCM, one scope per workflow id (`rt.vault.get(id, KEY)`).
+Changes (CLI/HTTP/manual) are visible on the next run — no restart.
+Only key rotation needs an env update + restart.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VAULT_MASTER_KEY` | — | base64 32B master key (prod: `docker run -e`); dev fallback: auto-generated `$STATE_DIR/vault/master.key` 0600 |
+| `VAULT_TOKEN` | — | Bearer token for `/vault/*` HTTP API (unset = API disabled); prod manual setup |
+| `VAULT_DIR` | `$STATE_DIR/vault` | Vault directory (`vault.json` 0600, `audit.log`, dev `master.key`) — mount as volume in Docker |
+
+```bash
+bun run vault set trello-move-notify TELEGRAM_BOT_TOKEN=...  # or KEY (value from stdin)
+bun run vault list trello-move-notify                        # key names only
+bun run vault rotate                                         # new master key via stdin
+# HTTP (VAULT_TOKEN required): PUT /vault/<id>/<KEY> { "value": "..." }
+```
+
 ## Module pipeline
 
 | Variable | Default | Purpose |
@@ -136,6 +155,21 @@ export GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)"
 ```
 
 Ingress verifies the `x-hub-signature-256` HMAC SHA-256 over the **raw body**.
+
+## Public URL (prod vs local dev)
+
+`PUBLIC_URL` is the public base URL the platform is reachable at
+(`https://host:port`); `register.sh` appends `/hooks/<bindingId>` and
+registers the Trello webhook against it.
+
+- **Prod (container)**: set `PUBLIC_URL` manually via env
+  (`docker run -e PUBLIC_URL=https://host`) — no ngrok, no pm2. `register.sh`
+  takes it from env as long as `<PUBLIC_URL>/health` responds.
+- **Dev (local)**: the tunnel is owned by pm2 (app `tunnel` in
+  `ecosystem.config.cjs`, ngrok agent on `:4040`); `register.sh` falls back to
+  the live `public_url` from `:4040/api/tunnels` when env is unset. pm2 and
+  `tunnel.sh` are dev-only and are excluded from the Docker image
+  (`.dockerignore`).
 
 ## Secrets
 

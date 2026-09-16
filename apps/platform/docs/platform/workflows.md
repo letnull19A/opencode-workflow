@@ -162,7 +162,38 @@ export default defineWorkflow<NotifyData>({
 Platform support (already wired in `main.ts`):
 
 - `TelegramConnector` — service `telegram`, op `messages.send`
-  (`text`, optional `chat_id`), secrets `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`.
+  (`text`, optional `chat_id` and `token`; `params.token` overrides env).
 - `WorkflowTaskRouter` — subscribes `task.received` and starts every workflow
   id in `WORKFLOW_ON_TASK_RECEIVED`; logs and keeps going if an id isn't
   registered.
+
+## Vault secrets in workflows
+
+Workflow-isolated secrets live in the vault (scope = workflow id),
+readable at run time via `rt.vault`. The pattern: resolve the secret in the
+node, pass it as command params — connectors accept credential overrides
+(`params.token` for telegram, `params.key`/`params.token` for trello), env
+stays the fallback:
+
+```ts
+run: async (ctx) => {
+  const token = await rt.vault.get("trello-move-notify", "TELEGRAM_BOT_TOKEN").catch(() => "");
+  const send = await rt.commands.execute({
+    service: "telegram",
+    op: "messages.send",
+    params: { text: format(ctx.data.task), ...(token ? { token } : {}) },
+  });
+  if (!send.ok) throw new Error(`telegram send failed: ${send.error}`);
+  return ctx;
+},
+```
+
+Notes:
+
+- Changing a secret (CLI, HTTP, or file edit) takes effect on the next run —
+  no restart, no artifact rebuild. Only master-key rotation needs an env
+  update + restart.
+- Values must never be logged or embedded in errors — vault APIs and audit
+  record scope/key names only.
+- Manage secrets with `bun run vault …` or the `/vault/*` HTTP API —
+  see [CLI](/reference/cli) and [HTTP API](/reference/api#vault-secrets-per-workflow).

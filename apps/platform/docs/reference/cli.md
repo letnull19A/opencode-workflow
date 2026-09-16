@@ -88,6 +88,28 @@ PORT=9000 bun run webhook
 
 Starts the HTTP API — see [HTTP API](/reference/api).
 
+## Vault
+
+Per-workflow secrets (scope = workflow id). The value never appears in
+logs — only scope/key names:
+
+```bash
+bun run vault set trello-move-notify TELEGRAM_BOT_TOKEN=...  # or KEY (value from stdin)
+bun run vault get trello-move-notify TELEGRAM_BOT_TOKEN      # value to stdout
+bun run vault list trello-move-notify                        # key names only
+bun run vault has trello-move-notify TELEGRAM_BOT_TOKEN      # yes/no
+bun run vault delete trello-move-notify TELEGRAM_BOT_TOKEN
+bun run vault rotate                                         # new master key via stdin
+bun run vault import-env trello-move-notify apps/platform/.env
+bun run vault genkey                                          # new master key to stdout
+```
+
+Master key resolution: `VAULT_MASTER_KEY` env (production, e.g.
+`docker run -e`); dev fallback is an auto-generated `$STATE_DIR/vault/master.key`
+(`0600`). After `rotate`, update `VAULT_MASTER_KEY` in env and restart the
+process. Remote management is also available over
+[HTTP](/reference/api#vault-secrets-per-workflow) with `VAULT_TOKEN`.
+
 ## Tooling
 
 | Command | Purpose |
