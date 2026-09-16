@@ -3,6 +3,7 @@ import type { INodeSpec } from "../protocol/node.ts";
 import type { IAgentExecutor } from "../protocol/executor.ts";
 import type { ICommandExecutor } from "../protocol/command.ts";
 import type { IEventBus } from "../protocol/events.ts";
+import type { IVault } from "../protocol/vault.ts";
 
 /**
  * Спецификация графа workflow — данные. Движок (билдер/раннер) находится
@@ -21,6 +22,7 @@ export interface IWorkflowRuntime {
   readonly executor: IAgentExecutor;
   readonly commands: ICommandExecutor;
   readonly bus: IEventBus<unknown>;
+  readonly vault: IVault;
 }
 
 /**

@@ -35,6 +35,8 @@ export type {
 
 export type { IEventBus, IEventHistory } from "./protocol/events.ts";
 
+export type { IVault } from "./protocol/vault.ts";
+
 export type {
   IWorkflowDefinition,
   IWorkflowGraph,
@@ -45,5 +47,24 @@ export { defineWorkflow } from "./workflow/definition.ts";
 
 export { node, graph, session } from "./dsl/graph.ts";
 export type { INodeOptions } from "./dsl/graph.ts";
+
+export {
+  opencodeCreateSession,
+  opencodeSessionPrompt,
+} from "./dsl/opencode.ts";
+export type {
+  SessionState,
+  SessionData,
+  OpencodeNodeOptions,
+  CreateSessionOptions,
+  SessionPromptOptions,
+} from "./dsl/opencode.ts";
+
+export {
+  OpencodeError,
+  OpencodeConnectionError,
+  OpencodeSessionCreateError,
+  OpencodeSessionPromptError,
+} from "./errors.ts";
 
 export { workflowFormat, sdkVersion } from "./version.ts";
