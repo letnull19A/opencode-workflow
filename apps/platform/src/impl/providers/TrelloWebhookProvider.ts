@@ -12,6 +12,7 @@ interface TrelloActionData {
   list?: TrelloListRef;
   listBefore?: TrelloListRef;
   listAfter?: TrelloListRef;
+  label?: { id?: string; name?: string; color?: string };
 }
 
 interface TrelloWebhookPayload {
@@ -26,7 +27,9 @@ interface TrelloWebhookPayload {
 /**
  * Провайдер Trello webhook (callbackURL → POST): нормализует action в
  * IWorkflowTask. createCard → kind "received", updateCard с переездом между
- * листами (listBefore/listAfter) → kind "moved". Остальные action — rejected.
+ * листами (listBefore/listAfter) → kind "moved", addLabelToCard → kind
+ * "received" с лейблом из события (createCard приходит без лейблов —
+ * Trello навешивает их отдельным событием). Остальные action — rejected.
  */
 export class TrelloWebhookProvider implements IWebhookProvider {
   readonly name = "trello" as const;
@@ -50,19 +53,32 @@ export class TrelloWebhookProvider implements IWebhookProvider {
       }
       return { accepted: false, reason: "updateCard без изменения листа" };
     }
+    if (type === "addLabelToCard") {
+      const labelName = data?.label?.name;
+      if (!labelName) return { accepted: false, reason: "addLabelToCard без имени лейбла" };
+      const labeled = this.toWorkflowTask(binding.source, card, action?.date, [labelName]);
+      return { accepted: true, task: labeled, kind: "received" };
+    }
     return { accepted: false, reason: `action "${type}" не отслеживается` };
   }
 
-  private toWorkflowTask(source: string, card: NonNullable<TrelloActionData["card"]>, date?: string): IWorkflowTask {
+  private toWorkflowTask(
+    source: string,
+    card: NonNullable<TrelloActionData["card"]>,
+    date?: string,
+    extraLabels: string[] = []
+  ): IWorkflowTask {
+    const names = [
+      ...(card.labels?.map((l) => l.name).filter((name): name is string => !!name) ?? []),
+      ...extraLabels,
+    ];
     return {
       externalId: card.id ?? "",
       source,
       title: card.name ?? "",
       description: card.desc,
       url: card.url ?? (card.shortLink ? `https://trello.com/c/${card.shortLink}` : undefined),
-      labels: card.labels
-        ?.map((l) => l.name)
-        .filter((name): name is string => !!name),
+      labels: names.length ? names : undefined,
       createdAt: date ?? new Date().toISOString(),
     };
   }

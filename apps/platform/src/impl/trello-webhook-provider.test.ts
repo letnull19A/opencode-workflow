@@ -73,6 +73,31 @@ describe("TrelloWebhookProvider", () => {
     expect(result.accepted).toBe(false);
   });
 
+  test("addLabelToCard → kind received с лейблом из события", () => {
+    const result = provider.toTask(binding, {
+      action: {
+        type: "addLabelToCard",
+        date: "2026-09-16T00:00:00.000Z",
+        data: {
+          card: { id: "c6", name: "titled", shortLink: "abc123" },
+          label: { id: "l9", name: "speka-click/infrastructure", color: "green" },
+        },
+      },
+    }, {});
+    expect(result.accepted).toBe(true);
+    if (!result.accepted) return;
+    expect(result.kind).toBe("received");
+    expect(result.task.labels).toEqual(["speka-click/infrastructure"]);
+    expect(result.task.url).toBe("https://trello.com/c/abc123");
+  });
+
+  test("addLabelToCard без имени лейбла → rejected", () => {
+    const result = provider.toTask(binding, {
+      action: { type: "addLabelToCard", data: { card: { id: "c6", name: "x" }, label: { id: "l9" } } },
+    }, {});
+    expect(result.accepted).toBe(false);
+  });
+
   test("прочие action (addLabel, commentCard, deleteCard) → rejected", () => {
     for (const type of ["addLabel", "commentCard", "deleteCard", "updateList"]) {
       const result = provider.toTask(binding, {
