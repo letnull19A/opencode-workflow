@@ -18,7 +18,7 @@ export type {
   ICommandExecutor,
 } from "./protocol/command.ts";
 
-export type { IAgentExecutor, PromptSessionResult } from "./protocol/executor.ts";
+export type { IAgentExecutor, PromptSessionResult, SessionSummary } from "./protocol/executor.ts";
 
 export type { ITaskAttachment, IWorkflowTask, ITaskSource } from "./protocol/task.ts";
 
@@ -51,13 +51,22 @@ export type { INodeOptions } from "./dsl/graph.ts";
 export {
   opencodeCreateSession,
   opencodeSessionPrompt,
+  opencodeSessionHistory,
+  opencodeWorktree,
+  projectMap,
 } from "./dsl/opencode.ts";
 export type {
   SessionState,
   SessionData,
+  ProjectData,
+  SessionHistoryData,
+  WorktreeData,
   OpencodeNodeOptions,
   CreateSessionOptions,
   SessionPromptOptions,
+  ProjectMapOptions,
+  SessionHistoryOptions,
+  WorktreeOptions,
 } from "./dsl/opencode.ts";
 
 export {
@@ -65,6 +74,7 @@ export {
   OpencodeConnectionError,
   OpencodeSessionCreateError,
   OpencodeSessionPromptError,
+  OpencodeWorktreeError,
 } from "./errors.ts";
 
 export { workflowFormat, sdkVersion } from "./version.ts";

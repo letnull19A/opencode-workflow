@@ -53,3 +53,16 @@ export class OpencodeSessionPromptError extends OpencodeError {
     this.sessionId = sessionId;
   }
 }
+
+/** Нода «worktree»: параллельная копия проекта не создана/не найдена. */
+export class OpencodeWorktreeError extends OpencodeError {
+  readonly worktreeName: string;
+  constructor(worktreeName: string, message: string, cause?: unknown) {
+    super(
+      worktreeName ? `opencode: worktree "${worktreeName}": ${message}` : `opencode: ${message}`,
+      cause === undefined ? undefined : { cause }
+    );
+    this.name = "OpencodeWorktreeError";
+    this.worktreeName = worktreeName;
+  }
+}
