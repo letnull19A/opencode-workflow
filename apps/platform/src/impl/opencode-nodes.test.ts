@@ -6,10 +6,11 @@ import {
   OpencodeSessionPromptError,
   graph,
   opencodeCreateSession,
+  opencodeSessionHistory,
   opencodeSessionPrompt,
   projectMap,
 } from "@opencode-workflow/sdk";
-import type { ProjectData, SessionData } from "@opencode-workflow/sdk";
+import type { ProjectData, SessionData, SessionHistoryData, WorktreeData } from "@opencode-workflow/sdk";
 import { DepthFirstNodeRunner } from "../engine/DepthFirstNodeRunner.ts";
 import { MapNodeContext } from "../engine/MapNodeContext.ts";
 import { NodeGraphBuilder } from "../engine/NodeGraphBuilder.ts";
@@ -36,6 +37,7 @@ function fakeExecutor(log: string[]): IAgentExecutor {
       agent?: string;
       sessionTitle?: string;
       sessionId?: string;
+      directory?: string;
       signal?: AbortSignal;
     }): Promise<PromptSessionResult> => {
       if (!opts.sessionId) {
@@ -211,3 +213,171 @@ describe("projectMap datasource node", () => {
   });
 });
 
+describe("opencodeSessionHistory node", () => {
+  test("пишет сводки сессий проекта в ctx.data", async () => {
+    const seen: Array<{ directory?: string; limit?: number }> = [];
+    const executor: IAgentExecutor = {
+      listAgents: async () => [],
+      createSession: async () => "sess-9",
+      runSession: async () => ({ sessionId: "sess-9", text: "" }),
+      listSessions: async (opts?: { directory?: string; limit?: number }) => {
+        seen.push({ ...(opts?.directory ? { directory: opts.directory } : {}), ...(opts?.limit !== undefined ? { limit: opts.limit } : {}) });
+        return [
+          { sessionId: "s1", title: "week plan", directory: "/work/speka", updatedAt: "2026-09-16T00:00:00.000Z" },
+        ];
+      },
+      close: async () => {},
+    };
+    const rt = rtOf(executor);
+    interface HistData extends SessionHistoryData {}
+    const spec = graph<HistData>("hist", [
+      opencodeSessionHistory<HistData>(rt, "hist", { directory: "/work/speka", limit: 5, outgoing: [] }),
+    ]);
+    const nodes = new NodeGraphBuilder().build(spec.specs).nodes;
+    const ctx = new MapNodeContext<HistData>("run-h1", new AbortController().signal, {});
+    await new DepthFirstNodeRunner().run(nodes.get("hist")!, ctx);
+    expect(ctx.data.opencodeSessions).toHaveLength(1);
+    expect(ctx.data.opencodeSessions?.[0]?.sessionId).toBe("s1");
+    expect(seen).toEqual([{ directory: "/work/speka", limit: 5 }]);
+  });
+
+  test("без directory — пустой список без вызова сервера", async () => {
+    let called = false;
+    const executor: IAgentExecutor = {
+      listAgents: async () => [],
+      createSession: async () => "sess-9",
+      runSession: async () => ({ sessionId: "sess-9", text: "" }),
+      listSessions: async () => {
+        called = true;
+        return [];
+      },
+      close: async () => {},
+    };
+    const rt = rtOf(executor);
+    interface HistData extends SessionHistoryData {}
+    const spec = graph<HistData>("hist", [
+      opencodeSessionHistory<HistData>(rt, "hist", { directory: () => undefined, outgoing: [] }),
+    ]);
+    const nodes = new NodeGraphBuilder().build(spec.specs).nodes;
+    const ctx = new MapNodeContext<HistData>("run-h2", new AbortController().signal, {});
+    await new DepthFirstNodeRunner().run(nodes.get("hist")!, ctx);
+    expect(ctx.data.opencodeSessions).toEqual([]);
+    expect(called).toBe(false);
+  });
+});
+
+describe("opencode worktree ops", () => {
+  const fakeApi = (store: Map<string, { name: string; directory: string; branch?: string }>) => ({
+    calls: [] as string[],
+    async list(directory: string) {
+      this.calls.push(`list:${directory}`);
+      return [...store.values()].filter((w) => w.directory.startsWith(directory));
+    },
+    async create(directory: string, name: string) {
+      this.calls.push(`create:${directory}:${name}`);
+      const wt = { name, directory: `${directory}/.wt/${name}`, branch: `wt/${name}` };
+      store.set(name, wt);
+      return wt;
+    },
+    async remove(_directory: string, worktreeDirectory: string) {
+      this.calls.push(`remove:${worktreeDirectory}`);
+      for (const [k, v] of store) if (v.directory === worktreeDirectory) store.delete(k);
+    },
+  });
+
+  test("ensure идемпотентен: повтор переиспользует (reused:true)", async () => {
+    const { OpencodeConnector } = await import("./OpencodeConnector.ts");
+    const api = fakeApi(new Map());
+    const connector = new OpencodeConnector(fakeExecutor([]) as never, api);
+    const first = await connector.execute({
+      service: "opencode",
+      op: "worktree.ensure",
+      params: { directory: "/work/p", name: "card-1" },
+    });
+    expect(first).toEqual({
+      ok: true,
+      data: { worktree: { name: "card-1", directory: "/work/p/.wt/card-1", branch: "wt/card-1" }, reused: false },
+    });
+    const second = await connector.execute({
+      service: "opencode",
+      op: "worktree.ensure",
+      params: { directory: "/work/p", name: "card-1" },
+    });
+    expect(second).toEqual({
+      ok: true,
+      data: { worktree: { name: "card-1", directory: "/work/p/.wt/card-1", branch: "wt/card-1" }, reused: true },
+    });
+    expect(api.calls.filter((c) => c.startsWith("create:")).length).toBe(1);
+  });
+
+  test("list/remove проходят в API с нужными путями", async () => {
+    const { OpencodeConnector } = await import("./OpencodeConnector.ts");
+    const api = fakeApi(new Map([["a", { name: "a", directory: "/work/p/.wt/a" }]]));
+    const connector = new OpencodeConnector(fakeExecutor([]) as never, api);
+    const list = await connector.execute({ service: "opencode", op: "worktree.list", params: { directory: "/work/p" } });
+    expect(list.ok).toBe(true);
+    const rm = await connector.execute({
+      service: "opencode",
+      op: "worktree.remove",
+      params: { directory: "/work/p", worktreeDirectory: "/work/p/.wt/a" },
+    });
+    expect(rm.ok).toBe(true);
+    expect(api.calls).toContain("remove:/work/p/.wt/a");
+  });
+
+  test("без directory/name — ok:false с подсказкой", async () => {
+    const { OpencodeConnector } = await import("./OpencodeConnector.ts");
+    const connector = new OpencodeConnector(fakeExecutor([]) as never, fakeApi(new Map()));
+    const res = await connector.execute({ service: "opencode", op: "worktree.ensure", params: {} });
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("opencodeWorktree node", () => {
+  test("пишет ctx.data.worktree и пропускает повтор (идемпотентность)", async () => {
+    const { opencodeWorktree } = await import("@opencode-workflow/sdk");
+    const { OpencodeConnector } = await import("./OpencodeConnector.ts");
+    const api = {
+      async list(_d: string) { return []; },
+      async create(_d: string, _n: string) { created += 1; return { name: "card-9", directory: "/work/p/.wt/card-9" }; },
+      async remove(_d: string, _w: string) {},
+    };
+    let created = 0;
+    const connector = new OpencodeConnector(fakeExecutor([]) as never, api);
+    const rt = { commands: connector } as unknown as import("@opencode-workflow/sdk").IWorkflowRuntime;
+    interface WtData extends WorktreeData {
+    marker?: string;
+  }
+    const spec = opencodeWorktree<WtData>(rt, "wt", {
+      directory: "/work/p",
+      name: "card-9",
+      outgoing: [],
+    });
+    const ctx = new MapNodeContext<WtData>("run-w1", new AbortController().signal, {});
+    await spec.executor.run(ctx);
+    expect(ctx.data.worktree).toEqual({ name: "card-9", directory: "/work/p/.wt/card-9" });
+    await spec.executor.run(ctx);
+    expect(created).toBe(1);
+  });
+
+  test("без directory — OpencodeWorktreeError с подсказкой про projectMap", async () => {
+    const { opencodeWorktree, OpencodeWorktreeError, OpencodeError } = await import("@opencode-workflow/sdk");
+    const rt = { commands: fakeCommands({}) } as unknown as import("@opencode-workflow/sdk").IWorkflowRuntime;
+    interface WtData extends WorktreeData {
+    marker?: string;
+  }
+    const spec = opencodeWorktree<WtData>(rt, "wt", {
+      directory: () => undefined,
+      name: "x",
+      outgoing: [],
+    });
+    const ctx = new MapNodeContext<WtData>("run-w2", new AbortController().signal, {});
+    const err = await spec.executor.run(ctx).then(
+      () => null,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(OpencodeWorktreeError);
+    expect(err).toBeInstanceOf(OpencodeError);
+    expect(String(err)).toContain("projectMap");
+  });
+});
