@@ -225,3 +225,47 @@ Demo chain (`workflows-src/opencode-chain.ts`, manual start):
 curl -X POST http://127.0.0.1:8787/workflow/opencode-chain \
   -H 'content-type: application/json' -d '{"title":"night deploy"}'
 ```
+
+## Parallel work: per-task worktrees
+
+One project, many cards in flight — each gets its own git worktree so agents
+never step on each other. The server creates worktrees itself (experimental
+worktree API), the platform only passes paths:
+
+- `opencodeWorktree(rt, id, { directory, name, … })` — ensure by name
+  (re-runs reuse it), writes `ctx.data.worktree = { name, directory, branch? }`;
+  failures throw `OpencodeWorktreeError`
+- name the worktree after the card (`card-<externalId>`); downstream session
+  nodes take `directory: (ctx) => ctx.data.worktree?.directory`
+- `service "opencode"` also exposes `worktree.list` / `worktree.remove`
+  (remove deletes the branch too) for inspection and cleanup
+
+Demo (`workflows-src/trello-project-work.ts`): map → worktree → session in
+the worktree → agent implements the card and commits → Telegram carries the
+result + branch name; **a human merges**. Unmapped cards are skipped by the
+same `condition` gate as in the project map.
+
+## Project map: label → directory datasource
+
+Tasks carry labels, projects live in the opencode-server container — and there
+is no standard deriving one from the other. The mapping is an explicit table,
+`STATE_DIR/projects.json`, managed with `bun run projects …`:
+
+```bash
+bun run projects add speka /work/projects/speka
+bun run projects list        # label → directory
+bun run projects remove speka
+```
+
+The `projectMap` node is the Datasource: it reads `ctx.data.task.labels`,
+resolves the first mapped label through `service "projects"` and writes
+`ctx.data.project = { label, directory }`. No mapping — nothing is written
+and downstream nodes fenced by `condition: (ctx) => Boolean(ctx.data.project)`
+are skipped: unmapped tasks (e.g. projects outside the container) end the run
+quietly instead of failing it.
+
+Session nodes take `directory` (string or `(ctx) => …`, usually from
+`ctx.data.project`): the server creates the session and runs prompts inside
+that project directory — the platform itself needs no files, only path
+strings. `opencodeSessionHistory` loads recent sessions of the directory
+(`ctx.data.opencodeSessions`) for prompt context and reporting.

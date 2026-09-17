@@ -110,6 +110,21 @@ Master key resolution: `VAULT_MASTER_KEY` env (production, e.g.
 process. Remote management is also available over
 [HTTP](/reference/api#vault-secrets-per-workflow) with `VAULT_TOKEN`.
 
+## Projects
+
+Explicit label → directory map (which Trello labels belong to which
+opencode-server project directories). Unmapped tasks are skipped by
+`projectMap`-gated workflows:
+
+```bash
+bun run projects add speka /work/projects/speka
+bun run projects list
+bun run projects remove speka
+```
+
+Storage: `STATE_DIR/projects.json` (`0600`). Changes are visible on the
+next read — no restart. See [workflows](/platform/workflows#project-map-label--directory-datasource).
+
 ## Tooling
 
 | Command | Purpose |
