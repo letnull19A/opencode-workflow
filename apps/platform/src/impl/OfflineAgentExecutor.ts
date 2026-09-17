@@ -1,4 +1,4 @@
-import type { IAgentExecutor, PromptSessionResult } from "@opencode-workflow/sdk";
+import type { IAgentExecutor, PromptSessionResult, SessionSummary } from "@opencode-workflow/sdk";
 
 /**
  * Offline-заглушка executor'а: платформа стартует и живёт без opencode-сервера
@@ -14,7 +14,7 @@ export class OfflineAgentExecutor implements IAgentExecutor {
     throw this.reason;
   }
 
-  async createSession(_title?: string): Promise<string> {
+  async createSession(_title?: string, _directory?: string): Promise<string> {
     throw this.reason;
   }
 
@@ -23,8 +23,13 @@ export class OfflineAgentExecutor implements IAgentExecutor {
     agent?: string;
     sessionTitle?: string;
     sessionId?: string;
+    directory?: string;
     signal?: AbortSignal;
   }): Promise<PromptSessionResult> {
+    throw this.reason;
+  }
+
+  async listSessions(_opts?: { directory?: string; limit?: number }): Promise<SessionSummary[]> {
     throw this.reason;
   }
 

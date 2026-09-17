@@ -9,6 +9,7 @@
     "watch-workflows": "bun src/cli/watch-workflows.ts",
     "build-workflow": "bun src/cli/build-workflow.ts",
     "vault": "bun src/cli/vault.ts",
+    "projects": "bun src/cli/projects.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:graph": "bun test src/engine/node.test.ts",

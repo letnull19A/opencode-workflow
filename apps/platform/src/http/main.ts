@@ -24,6 +24,8 @@ import { GenericWebhookProvider } from "../impl/providers/GenericWebhookProvider
 import { TrelloWebhookProvider } from "../impl/providers/TrelloWebhookProvider.ts";
 import { FileVault } from "../impl/FileVault.ts";
 import { VaultConnector } from "../impl/VaultConnector.ts";
+import { FileProjectMap } from "../impl/FileProjectMap.ts";
+import { ProjectsConnector } from "../impl/ProjectsConnector.ts";
 import { ScriptDelivery } from "../impl/ScriptDelivery.ts";
 import type { IEventBus } from "../core/events.ts";
 import type { IWorkflowTask } from "@opencode-workflow/sdk";
@@ -44,6 +46,7 @@ async function main(): Promise<void> {
   });
   const store = new FilePipelineStateStore();
   const vault = await FileVault.open();
+  const projects = await FileProjectMap.open();
   const registry = new ConfigWorkerRegistry([new GeneralModuleWorker(), new NestJSModuleWorker(), new DotNetModuleWorker()]);
   const pipeline = new ModulePipeline(executor, store, bus, registry);
   const matcher = new ModuleMatcher(bus, pipeline);
@@ -63,6 +66,7 @@ async function main(): Promise<void> {
     new TelegramConnector(),
     new GitHubConnector(),
     new VaultConnector(vault),
+    new ProjectsConnector(projects),
   ]);
 
   const workflows = new WorkflowRegistry();

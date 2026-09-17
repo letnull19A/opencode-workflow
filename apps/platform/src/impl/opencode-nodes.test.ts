@@ -7,8 +7,9 @@ import {
   graph,
   opencodeCreateSession,
   opencodeSessionPrompt,
+  projectMap,
 } from "@opencode-workflow/sdk";
-import type { SessionData } from "@opencode-workflow/sdk";
+import type { ProjectData, SessionData } from "@opencode-workflow/sdk";
 import { DepthFirstNodeRunner } from "../engine/DepthFirstNodeRunner.ts";
 import { MapNodeContext } from "../engine/MapNodeContext.ts";
 import { NodeGraphBuilder } from "../engine/NodeGraphBuilder.ts";
@@ -54,12 +55,33 @@ function fakeExecutor(log: string[]): IAgentExecutor {
       log.push(`run(continue):${opts.sessionId}#${turns.length}`);
       return { sessionId: opts.sessionId, text: `answer-${turns.length}-in-${opts.sessionId}` };
     },
+    listSessions: async () => [],
     close: async () => {},
   };
 }
 
 const rtOf = (executor: IAgentExecutor) =>
   ({ executor }) as unknown as import("@opencode-workflow/sdk").IWorkflowRuntime;
+
+interface MapData extends ProjectData {
+  task: { externalId: string; source: string; title: string; labels?: string[]; createdAt: string };
+}
+
+function fakeCommands(map: Record<string, string>) {
+  return {
+    execute: async (command: { service: string; op: string; params: Record<string, unknown> }) => {
+      if (command.service !== "projects" || command.op !== "get") {
+        return { ok: false as const, error: "unknown" };
+      }
+      const directory = map[command.params.label as string];
+      if (!directory) return { ok: false as const, error: "нет маппинга" };
+      return { ok: true as const, data: { entry: { label: command.params.label, directory } } };
+    },
+  };
+}
+
+const rtMapOf = (executor: IAgentExecutor, map: Record<string, string>) =>
+  ({ executor, commands: fakeCommands(map) }) as unknown as import("@opencode-workflow/sdk").IWorkflowRuntime;
 
 describe("opencode session nodes", () => {
   test("цепочка create → prompt → prompt держит одну сессию, text обновляется", async () => {
@@ -119,6 +141,9 @@ describe("opencode session nodes", () => {
       runSession: async () => {
         throw new OpencodeConnectionError("http://127.0.0.1:4096");
       },
+      listSessions: async () => {
+        throw new OpencodeConnectionError("http://127.0.0.1:4096");
+      },
       close: async () => {},
     };
     const rt = rtOf(dead);
@@ -134,3 +159,55 @@ describe("opencode session nodes", () => {
     expect(cause).toBeInstanceOf(OpencodeConnectionError);
   });
 });
+
+describe("projectMap datasource node", () => {
+  const taskOf = (labels?: string[]): MapData["task"] => ({
+    externalId: "c1",
+    source: "trello",
+    title: "t1",
+    ...(labels ? { labels } : {}),
+    createdAt: new Date().toISOString(),
+  });
+
+  test("матч по лейблу пишет project, downstream видит его", async () => {
+    const rt = rtMapOf(fakeExecutor([]), { speka: "/work/speka" });
+    const spec = graph<MapData>("map", [projectMap<MapData>(rt, "map", { outgoing: [] })]);
+    const nodes = new NodeGraphBuilder().build(spec.specs).nodes;
+    const ctx = new MapNodeContext<MapData>("run-m1", new AbortController().signal, { task: taskOf(["speka"]) });
+    await new DepthFirstNodeRunner().run(nodes.get("map")!, ctx);
+    expect(ctx.data.project).toEqual({ label: "speka", directory: "/work/speka" });
+  });
+
+  test("нет маппинга — тихий пропуск: project не пишется", async () => {
+    const rt = rtMapOf(fakeExecutor([]), { speka: "/work/speka" });
+    const spec = graph<MapData>("map", [projectMap<MapData>(rt, "map", { outgoing: [] })]);
+    const nodes = new NodeGraphBuilder().build(spec.specs).nodes;
+    const ctx = new MapNodeContext<MapData>("run-m2", new AbortController().signal, { task: taskOf(["other"]) });
+    await new DepthFirstNodeRunner().run(nodes.get("map")!, ctx);
+    expect(ctx.data.project).toBeUndefined();
+  });
+
+  test("condition-гейт отсекает поддерево без project", async () => {
+    const visited: string[] = [];
+    const rt = rtMapOf(fakeExecutor([]), { speka: "/work/speka" });
+    const spec = graph<MapData>("map", [
+      projectMap<MapData>(rt, "map", { outgoing: ["work"] }),
+      {
+        id: "work",
+        executor: {
+          run: async (ctx: import("@opencode-workflow/sdk").INodeContext<MapData>) => {
+            visited.push("work");
+            return ctx;
+          },
+        },
+        outgoing: [],
+        condition: (ctx: import("@opencode-workflow/sdk").INodeContext<MapData>) => Boolean(ctx.data.project),
+      },
+    ]);
+    const nodes = new NodeGraphBuilder().build(spec.specs).nodes;
+    const ctx = new MapNodeContext<MapData>("run-m3", new AbortController().signal, { task: taskOf(["other"]) });
+    await new DepthFirstNodeRunner().run(nodes.get("map")!, ctx);
+    expect(visited).toEqual([]);
+  });
+});
+

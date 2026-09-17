@@ -20,6 +20,8 @@ import { WorkflowRegistry } from "../impl/WorkflowRegistry.ts";
 import { WorkflowDirLoader } from "../impl/WorkflowDirLoader.ts";
 import { FileVault } from "../impl/FileVault.ts";
 import { VaultConnector } from "../impl/VaultConnector.ts";
+import { FileProjectMap } from "../impl/FileProjectMap.ts";
+import { ProjectsConnector } from "../impl/ProjectsConnector.ts";
 import { WorkflowTaskRouter, parseWorkflowIds } from "../impl/WorkflowTaskRouter.ts";
 import type { ITaskSource } from "@opencode-workflow/sdk";
 
@@ -31,12 +33,14 @@ async function main(): Promise<void> {
     return new OfflineAgentExecutor(err);
   });
   const vault = await FileVault.open();
+  const projects = await FileProjectMap.open();
   const commands = new CommandExecutor([
     new OpencodeConnector(executor),
     new TrelloConnector(),
     new TelegramConnector(),
     new GitHubConnector(),
     new VaultConnector(vault),
+    new ProjectsConnector(projects),
   ]);
   const registry = new ConfigWorkerRegistry([new GeneralModuleWorker(), new NestJSModuleWorker(), new DotNetModuleWorker()]);
   const store = new FilePipelineStateStore();
