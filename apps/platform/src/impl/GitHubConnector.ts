@@ -9,7 +9,7 @@ function githubToken(): string {
 }
 
 /**
- * Коннектор GitHub: логи упавших workflow-ранов, создание issue.
+ * Коннектор GitHub: логи упавших workflow-ранов, создание issue и PR.
  * Секреты — только из env (GITHUB_TOKEN).
  */
 export class GitHubConnector implements IServiceConnector {
@@ -28,6 +28,10 @@ export class GitHubConnector implements IServiceConnector {
           return this.ok(await this.get(`/repos/${command.params.repo}/actions/runs/${command.params.runId}/jobs`, {}, signal));
         case "issues.create":
           return this.ok(await this.post(`/repos/${command.params.repo}/issues`, command.params, signal));
+        case "pulls.create":
+          return this.ok(
+            await this.post(`/repos/${command.params.repo}/pulls`, pullRequestBody(command.params), signal)
+          );
         default:
           return { ok: false, error: `unknown op "${command.op}"` };
       }
@@ -43,7 +47,7 @@ export class GitHubConnector implements IServiceConnector {
     return (await res.json()) as T;
   }
 
-  private async post<T>(path: string, body: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<T> {
+  private async post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
     const res = await fetch(`${GITHUB_API}${path}`, {
       method: "POST",
       headers: { ...this.headers(), "content-type": "application/json" },
@@ -66,4 +70,25 @@ export class GitHubConnector implements IServiceConnector {
   private ok(data: unknown): CommandResult {
     return { ok: true, data };
   }
+}
+
+export interface PullRequestParams {
+  title: string;
+  head: string;
+  base: string;
+  body?: string;
+  draft?: boolean;
+}
+
+export function pullRequestBody(params: Readonly<Record<string, unknown>>): PullRequestParams {
+  const title = params.title;
+  const head = params.head;
+  const base = params.base;
+  if (typeof title !== "string" || !title) throw new Error('pulls.create: params.title обязателен');
+  if (typeof head !== "string" || !head) throw new Error('pulls.create: params.head обязателен');
+  if (typeof base !== "string" || !base) throw new Error('pulls.create: params.base обязателен');
+  const out: PullRequestParams = { title, head, base };
+  if (typeof params.body === "string") out.body = params.body;
+  if (typeof params.draft === "boolean") out.draft = params.draft;
+  return out;
 }
